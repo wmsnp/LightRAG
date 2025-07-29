@@ -2357,6 +2357,13 @@ async def _build_query_context(
     if not entities_context and not relations_context:
         return None
 
+    if query_param.json_context:
+        return {
+            "Entities": entities_context,
+            "Relationships": relations_context,
+            "DocumentChunks": text_units_context,
+        }
+    
     entities_str = json.dumps(entities_context, ensure_ascii=False)
     relations_str = json.dumps(relations_context, ensure_ascii=False)
     text_units_str = json.dumps(text_units_context, ensure_ascii=False)
@@ -2926,7 +2933,8 @@ async def naive_query(
                 "file_path": chunk.get("file_path", "unknown_source"),
             }
         )
-
+    if query_param.json_context:
+        return text_units_context
     text_units_str = json.dumps(text_units_context, ensure_ascii=False)
     if query_param.only_need_context:
         return f"""

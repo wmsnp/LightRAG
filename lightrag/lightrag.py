@@ -1581,6 +1581,7 @@ class LightRAG:
         global_config = asdict(self)
         # Save original query for vector search
         param.original_query = query
+        param.only_need_context = True if param.json_context else False
 
         if param.mode in ["local", "global", "hybrid", "mix"]:
             response = await kg_query(
