@@ -36,7 +36,6 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
             llm_instance = OpenAI(
                 model="gpt-4",
                 api_key="your-openai-key",
-                temperature=0.7,
             )
             kwargs['llm_instance'] = llm_instance
 
@@ -58,7 +57,6 @@ rag = LightRAG(
     llm_model_func=llm_model_func,
     embedding_func=EmbeddingFunc(
         embedding_dim=1536,
-        max_token_size=8192,
         func=lambda texts: llama_index_embed(
             texts,
             embed_model=OpenAIEmbedding(
@@ -92,7 +90,6 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
                 model=f"openai/{settings.LLM_MODEL}",  # Format: "provider/model_name"
                 api_base=settings.LITELLM_URL,
                 api_key=settings.LITELLM_KEY,
-                temperature=0.7,
             )
             kwargs['llm_instance'] = llm_instance
 
@@ -114,7 +111,6 @@ rag = LightRAG(
     llm_model_func=llm_model_func,
     embedding_func=EmbeddingFunc(
         embedding_dim=1536,
-        max_token_size=8192,
         func=lambda texts: llama_index_embed(
             texts,
             embed_model=LiteLLMEmbedding(
@@ -143,7 +139,6 @@ LITELLM_KEY=your-litellm-key
 # Model Configuration
 LLM_MODEL=gpt-4
 EMBEDDING_MODEL=text-embedding-3-large
-EMBEDDING_MAX_TOKEN_SIZE=8192
 ```
 
 ### Key Differences

@@ -50,6 +50,8 @@
       "confirmPlaceholder": "Tapez yes pour confirmer",
       "clearCache": "Effacer le cache LLM",
       "confirmButton": "OUI",
+      "clearing": "Effacement en cours...",
+      "timeout": "L'opération d'effacement a expiré, veuillez réessayer",
       "success": "Documents effacés avec succès",
       "cacheCleared": "Cache effacé avec succès",
       "cacheClearFailed": "Échec de l'effacement du cache :\n{{error}}",
@@ -72,15 +74,11 @@
       "failed": "Échec de la suppression des documents :\n{{message}}",
       "error": "Échec de la suppression des documents :\n{{error}}",
       "busy": "Le pipeline est occupé, veuillez réessayer plus tard",
-      "notAllowed": "Aucune autorisation pour effectuer cette opération",
-      "cannotDeleteAll": "Impossible de supprimer tous les documents. Si vous devez supprimer tous les documents, veuillez utiliser la fonction Effacer les documents."
+      "notAllowed": "Aucune autorisation pour effectuer cette opération"
     },
-    "deselectDocuments": {
-      "button": "Désélectionner",
-      "tooltip": "Désélectionner tous les documents sélectionnés",
-      "title": "Désélectionner les documents",
-      "description": "Cette action effacera tous les documents sélectionnés ({{count}} sélectionnés)",
-      "confirmButton": "Tout désélectionner"
+    "selectDocuments": {
+      "selectCurrentPage": "Sélectionner la page actuelle ({{count}})",
+      "deselectAll": "Tout désélectionner ({{count}})"
     },
     "uploadDocuments": {
       "button": "Télécharger",
@@ -117,6 +115,7 @@
       "title": "Gestion des documents",
       "scanButton": "Scanner",
       "scanTooltip": "Scanner les documents dans le dossier d'entrée",
+      "refreshTooltip": "Réinitialiser la liste des documents",
       "pipelineStatusButton": "État du Pipeline",
       "pipelineStatusTooltip": "Voir l'état du pipeline",
       "uploadedTitle": "Documents téléchargés",
@@ -125,6 +124,7 @@
       "emptyDescription": "Il n'y a pas encore de documents téléchargés.",
       "columns": {
         "id": "ID",
+        "fileName": "Nom du fichier",
         "summary": "Résumé",
         "status": "Statut",
         "length": "Longueur",
@@ -187,7 +187,10 @@
       "unknown": "Inconnu",
       "object": "Objet",
       "group": "Groupe",
-      "technology": "Technologie"
+      "technology": "Technologie",
+      "product": "Produit",
+      "document": "Document",
+      "other": "Autre"
     },
     "sideBar": {
       "settings": {
@@ -334,7 +337,10 @@
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "Copier dans le presse-papiers",
-      "copyError": "Échec de la copie du texte dans le presse-papiers"
+      "copyError": "Échec de la copie du texte dans le presse-papiers",
+      "thinking": "Réflexion en cours...",
+      "thinkingTime": "Temps de réflexion {{time}}s",
+      "thinkingInProgress": "Réflexion en cours..."
     },
     "retrieval": {
       "startPrompt": "Démarrez une récupération en tapant votre requête ci-dessous",
@@ -401,5 +407,14 @@
     "description": "Veuillez entrer votre clé API pour accéder au service",
     "placeholder": "Entrez votre clé API",
     "save": "Sauvegarder"
+  },
+  "pagination": {
+    "showing": "Affichage de {{start}} à {{end}} sur {{total}} entrées",
+    "page": "Page",
+    "pageSize": "Taille de la page",
+    "firstPage": "Première page",
+    "prevPage": "Page précédente",
+    "nextPage": "Page suivante",
+    "lastPage": "Dernière page"
   }
 }

@@ -40,6 +40,7 @@ LightRAG necessitates the integration of both an LLM (Large Language Model) and 
 * lollms
 * openai or openai compatible
 * azure_openai
+* aws_bedrock
 
 It is recommended to use environment variables to configure the LightRAG Server. There is an example environment variable file named `env.example` in the root directory of the project. Please copy this file to the startup directory and rename it to `.env`. After that, you can modify the parameters related to the LLM and Embedding models in the `.env` file. It is important to note that the LightRAG Server will load the environment variables from `.env` into the system environment variables each time it starts. **LightRAG Server will prioritize the settings in the system environment variables to .env file**.
 
@@ -69,8 +70,8 @@ LLM_BINDING=ollama
 LLM_MODEL=mistral-nemo:latest
 LLM_BINDING_HOST=http://localhost:11434
 # LLM_BINDING_API_KEY=your_api_key
-###  Ollama Server context length
-OLLAMA_NUM_CTX=8192
+###  Ollama Server context length (Must be larger than MAX_TOTAL_TOKENS+2000)
+OLLAMA_LLM_NUM_CTX=16384
 
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
@@ -78,6 +79,8 @@ EMBEDDING_MODEL=bge-m3:latest
 EMBEDDING_DIM=1024
 # EMBEDDING_BINDING_API_KEY=your_api_key
 ```
+
+> **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase. For certain storage solutions (e.g., PostgreSQL), the vector dimension must be defined upon initial table creation. Therefore, when changing embedding models, it is necessary to delete the existing vector-related tables and allow LightRAG to recreate them with the new dimensions.
 
 ### Starting LightRAG Server
 
@@ -357,11 +360,21 @@ Most of the configurations come with default settings; check out the details in 
 LightRAG supports binding to various LLM/Embedding backends:
 
 * ollama
-* lollms
-* openai & openai compatible
+* openai (including openai compatible)
 * azure_openai
+* lollms
+* aws_bedrock
 
 Use environment variables `LLM_BINDING` or CLI argument `--llm-binding` to select the LLM backend type. Use environment variables `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select the Embedding backend type.
+
+For LLM and embedding configuration examples, please refer to the `env.example` file in the project's root directory. To view the complete list of configurable options for OpenAI and Ollama-compatible LLM interfaces, use the following commands:
+```
+lightrag-server --llm-binding openai --help
+lightrag-server --llm-binding ollama --help
+lightrag-server --embedding-binding ollama --help
+```
+
+> Please use OpenAI-compatible method to access LLMs deployed by OpenRouter or vLLM. You can pass additional parameters to OpenRouter or vLLM through the `OPENAI_LLM_EXTRA_BODY` environment variable to disable reasoning mode or achieve other personalized controls.
 
 ### Entity Extraction Configuration
 * ENABLE_LLM_CACHE_FOR_EXTRACT: Enable LLM cache for entity extraction (default: true)
@@ -377,53 +390,9 @@ LightRAG uses 4 types of storage for different purposes:
 * GRAPH_STORAGE: entity relation graph
 * DOC_STATUS_STORAGE: document indexing status
 
-Each storage type has several implementations:
+LightRAG Server offers various storage implementations, with the default being an in-memory database that persists data to the WORKING_DIR directory. Additionally, LightRAG supports a wide range of storage solutions including PostgreSQL, MongoDB, FAISS, Milvus, Qdrant, Neo4j, Memgraph, and Redis. For detailed information on supported storage options, please refer to the storage section in the README.md file located in the root directory.
 
-* KV_STORAGE supported implementations:
-
-```
-JsonKVStorage    JsonFile (default)
-PGKVStorage      Postgres
-RedisKVStorage   Redis
-MongoKVStorage   MongoDB
-```
-
-* GRAPH_STORAGE supported implementations:
-
-```
-NetworkXStorage      NetworkX (default)
-Neo4JStorage         Neo4J
-PGGraphStorage       PostgreSQL with AGE plugin
-MemgraphStorage.     Memgraph
-```
-
-> Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
-
-* VECTOR_STORAGE supported implementations:
-
-```
-NanoVectorDBStorage         NanoVector (default)
-PGVectorStorage             Postgres
-MilvusVectorDBStorage       Milvus
-ChromaVectorDBStorage       Chroma
-FaissVectorDBStorage        Faiss
-QdrantVectorDBStorage       Qdrant
-MongoVectorDBStorage        MongoDB
-```
-
-* DOC_STATUS_STORAGE: supported implementations:
-
-```
-JsonDocStatusStorage        JsonFile (default)
-PGDocStatusStorage          Postgres
-MongoDocStatusStorage       MongoDB
-```
-Example connection configurations for each storage type can be found in the `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts.
-
-
-### How to Select Storage Implementation
-
-You can select storage implementation by environment variables. You can set the following environment variables to a specific storage implementation name before the first start of the API Server:
+You can select the storage implementation by configuring environment variables. For instance, prior to the initial launch of the API server, you can set the following environment variable to specify your desired storage implementation:
 
 ```
 LIGHTRAG_KV_STORAGE=PGKVStorage
@@ -443,19 +412,53 @@ You cannot change storage implementation selection after adding documents to Lig
 | --working-dir         | ./rag_storage | Working directory for RAG storage                                                                                               |
 | --input-dir           | ./inputs      | Directory containing input documents                                                                                            |
 | --max-async           | 4             | Maximum number of async operations                                                                                              |
-| --max-tokens          | 32768         | Maximum token size                                                                                                              |
-| --timeout             | 150           | Timeout in seconds. None for infinite timeout (not recommended)                                                                 |
 | --log-level           | INFO          | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)                                                                           |
 | --verbose             | -             | Verbose debug output (True, False)                                                                                              |
 | --key                 | None          | API key for authentication. Protects the LightRAG server against unauthorized access                                            |
 | --ssl                 | False         | Enable HTTPS                                                                                                                    |
 | --ssl-certfile        | None          | Path to SSL certificate file (required if --ssl is enabled)                                                                     |
 | --ssl-keyfile         | None          | Path to SSL private key file (required if --ssl is enabled)                                                                     |
-| --top-k               | 50            | Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.                  |
-| --cosine-threshold    | 0.4           | The cosine threshold for nodes and relation retrieval, works with top-k to control the retrieval of nodes and relations.        |
-| --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai)                                                          |
-| --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai)                                                                   |
+| --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, aws_bedrock)                                                          |
+| --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, aws_bedrock)                                                                   |
 | --auto-scan-at-startup| -             | Scan input directory for new files and start indexing                                                                           |
+
+### Reranking Configuration
+
+Reranking query-recalled chunks can significantly enhance retrieval quality by re-ordering documents based on an optimized relevance scoring model. LightRAG currently supports the following rerank providers:
+
+- **Cohere / vLLM**: Offers full API integration with Cohere AI's `v2/rerank` endpoint. As vLLM provides a Cohere-compatible reranker API, all reranker models deployed via vLLM are also supported.
+- **Jina AI**: Provides complete implementation compatibility with all Jina rerank models.
+- **Aliyun**: Features a custom implementation designed to support Aliyun's rerank API format.
+
+The rerank provider is configured via the `.env` file. Below is an example configuration for a rerank model deployed locally using vLLM:
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+Here is an example configuration for utilizing the Reranker service provided by Aliyun:
+
+```
+RERANK_BINDING=aliyun
+RERANK_MODEL=gte-rerank-v2
+RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+For comprehensive reranker configuration examples, please refer to the `env.example` file.
+
+### Enable Reranking
+
+Reranking can be enabled or disabled on a per-query basis.
+
+The `/query` and `/query/stream` API endpoints include an `enable_rerank` parameter, which is set to `true` by default, controlling whether reranking is active for the current query. To change the default value of the `enable_rerank` parameter to `false`, set the following environment variable:
+
+```
+RERANK_BY_DEFAULT=False
+```
 
 ### .env Examples
 
@@ -471,8 +474,7 @@ SUMMARY_LANGUAGE=Chinese
 MAX_PARALLEL_INSERT=2
 
 ### LLM Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
-TIMEOUT=200
-TEMPERATURE=0.0
+TIMEOUT=150
 MAX_ASYNC=4
 
 LLM_BINDING=openai
@@ -481,6 +483,7 @@ LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your-api-key
 
 ### Embedding Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
+# see also env.ollama-binding-options.example for fine tuning ollama
 EMBEDDING_MODEL=bge-m3:latest
 EMBEDDING_DIM=1024
 EMBEDDING_BINDING=ollama
@@ -529,111 +532,21 @@ You can test the API endpoints using the provided curl commands or through the S
 4. Query the system using the query endpoints
 5. Trigger document scan if new files are put into the inputs directory
 
-### Query Endpoints:
+## Asynchronous Document Indexing with Progress Tracking
 
-#### POST /query
-Query the RAG system with options for different search modes.
+LightRAG implements asynchronous document indexing to enable frontend monitoring and querying of document processing progress. Upon uploading files or inserting text through designated endpoints, a unique Track ID is returned to facilitate real-time progress monitoring.
 
-```bash
-curl -X POST "http://localhost:9621/query" \
-    -H "Content-Type: application/json" \
-    -d '{"query": "Your question here", "mode": "hybrid"}'
-```
+**API Endpoints Supporting Track ID Generation:**
 
-#### POST /query/stream
-Stream responses from the RAG system.
+* `/documents/upload`
+* `/documents/text`
+* `/documents/texts`
 
-```bash
-curl -X POST "http://localhost:9621/query/stream" \
-    -H "Content-Type: application/json" \
-    -d '{"query": "Your question here", "mode": "hybrid"}'
-```
+**Document Processing Status Query Endpoint:**
+* `/track_status/{track_id}`
 
-### Document Management Endpoints:
-
-#### POST /documents/text
-Insert text directly into the RAG system.
-
-```bash
-curl -X POST "http://localhost:9621/documents/text" \
-    -H "Content-Type: application/json" \
-    -d '{"text": "Your text content here", "description": "Optional description"}'
-```
-
-#### POST /documents/file
-Upload a single file to the RAG system.
-
-```bash
-curl -X POST "http://localhost:9621/documents/file" \
-    -F "file=@/path/to/your/document.txt" \
-    -F "description=Optional description"
-```
-
-#### POST /documents/batch
-Upload multiple files at once.
-
-```bash
-curl -X POST "http://localhost:9621/documents/batch" \
-    -F "files=@/path/to/doc1.txt" \
-    -F "files=@/path/to/doc2.txt"
-```
-
-#### POST /documents/scan
-
-Trigger document scan for new files in the input directory.
-
-```bash
-curl -X POST "http://localhost:9621/documents/scan" --max-time 1800
-```
-
-> Adjust max-time according to the estimated indexing time for all new files.
-
-#### DELETE /documents
-
-Clear all documents from the RAG system.
-
-```bash
-curl -X DELETE "http://localhost:9621/documents"
-```
-
-### Ollama Emulation Endpoints:
-
-#### GET /api/version
-
-Get Ollama version information.
-
-```bash
-curl http://localhost:9621/api/version
-```
-
-#### GET /api/tags
-
-Get available Ollama models.
-
-```bash
-curl http://localhost:9621/api/tags
-```
-
-#### POST /api/chat
-
-Handle chat completion requests. Routes user queries through LightRAG by selecting query mode based on query prefix. Detects and forwards OpenWebUI session-related requests (for metadata generation task) directly to the underlying LLM.
-
-```shell
-curl -N -X POST http://localhost:9621/api/chat -H "Content-Type: application/json" -d \
-  '{"model":"lightrag:latest","messages":[{"role":"user","content":"猪八戒是谁"}],"stream":true}'
-```
-
-> For more information about Ollama API, please visit: [Ollama API documentation](https://github.com/ollama/ollama/blob/main/docs/api.md)
-
-#### POST /api/generate
-
-Handle generate completion requests. For compatibility purposes, the request is not processed by LightRAG, and will be handled by the underlying LLM model.
-
-### Utility Endpoints:
-
-#### GET /health
-Check server health and configuration.
-
-```bash
-curl "http://localhost:9621/health"
-```
+This endpoint provides comprehensive status information including:
+* Document processing status (pending/processing/processed/failed)
+* Content summary and metadata
+* Error messages if processing failed
+* Timestamps for creation and updates

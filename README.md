@@ -141,10 +141,12 @@ LightRAG's demands on the capabilities of Large Language Models (LLMs) are signi
 - **LLM Selection**:
   - It is recommended to use an LLM with at least 32 billion parameters.
   - The context length should be at least 32KB, with 64KB being recommended.
+  - It is not recommended to choose reasoning models during the document indexing stage.
+  - During the query stage, it is recommended to choose models with stronger capabilities than those used in the indexing stage to achieve better query results.
 - **Embedding Model**:
   - A high-performance Embedding model is essential for RAG.
   - We recommend using mainstream multilingual Embedding models, such as: `BAAI/bge-m3` and `text-embedding-3-large`.
-  - **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase.
+  - **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase. For certain storage solutions (e.g., PostgreSQL), the vector dimension must be defined upon initial table creation. Therefore, when changing embedding models, it is necessary to delete the existing vector-related tables and allow LightRAG to recreate them with the new dimensions.
 - **Reranker Model Configuration**:
   - Configuring a Reranker model can significantly enhance LightRAG's retrieval performance.
   - When a Reranker model is enabled, it is recommended to set the "mix mode" as the default query mode.
@@ -177,11 +179,12 @@ For a streaming response implementation example, please see `examples/lightrag_o
 
 ## Programing with LightRAG Core
 
-> If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
+> ⚠️ **If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server**. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
 
 ### ⚠️ Important: Initialization Requirements
 
 **LightRAG requires explicit initialization before use.** You must call both `await rag.initialize_storages()` and `await initialize_pipeline_status()` after creating a LightRAG instance, otherwise you will encounter errors like:
+
 - `AttributeError: __aenter__` - if storages are not initialized
 - `KeyError: 'history_messages'` - if pipeline status is not initialized
 
@@ -272,14 +275,14 @@ A full list of LightRAG init parameters:
 | **embedding_func_max_async** | `int` | Maximum number of concurrent asynchronous embedding processes | `16` |
 | **llm_model_func** | `callable` | Function for LLM generation | `gpt_4o_mini_complete` |
 | **llm_model_name** | `str` | LLM model name for generation | `meta-llama/Llama-3.2-1B-Instruct` |
-| **summary_max_tokens** | `int` | Maximum tokens send to LLM to generate entity relation summaries | `32000`（default value changed by env var MAX_TOKENS) |
+| **summary_context_size** | `int` | Maximum tokens send to LLM to generate summaries for entity relation merging | `10000`（configured by env var SUMMARY_CONTEXT_SIZE) |
+| **summary_max_tokens** | `int` | Maximum token size for entity/relation description | `500`（configured by env var SUMMARY_MAX_TOKENS) |
 | **llm_model_max_async** | `int` | Maximum number of concurrent asynchronous LLM processes | `4`（default value changed by env var MAX_ASYNC) |
 | **llm_model_kwargs** | `dict` | Additional parameters for LLM generation | |
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application | `TRUE` |
-| **addon_params** | `dict` | Additional parameters, e.g., `{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"]}`: sets example limit, entiy/relation extraction output language | `example_number: all examples, language: English` |
-| **convert_response_to_json_func** | `callable` | Not used | `convert_response_to_json` |
+| **addon_params** | `dict` | Additional parameters, e.g., `{"language": "Simplified Chinese", "entity_types": ["organization", "person", "location", "event"]}`: sets example limit, entiy/relation extraction output language | language: English` |
 | **embedding_cache_config** | `dict` | Configuration for question-answer caching. Contains three parameters: `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers. `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM. `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
 
 </details>
@@ -316,18 +319,18 @@ class QueryParam:
     top_k: int = int(os.getenv("TOP_K", "60"))
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
-    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", "10"))
+    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", "20"))
     """Number of text chunks to retrieve initially from vector search and keep after reranking.
     If None, defaults to top_k value.
     """
 
-    max_entity_tokens: int = int(os.getenv("MAX_ENTITY_TOKENS", "10000"))
+    max_entity_tokens: int = int(os.getenv("MAX_ENTITY_TOKENS", "6000"))
     """Maximum number of tokens allocated for entity context in unified token control system."""
 
-    max_relation_tokens: int = int(os.getenv("MAX_RELATION_TOKENS", "10000"))
+    max_relation_tokens: int = int(os.getenv("MAX_RELATION_TOKENS", "8000"))
     """Maximum number of tokens allocated for relationship context in unified token control system."""
 
-    max_total_tokens: int = int(os.getenv("MAX_TOTAL_TOKENS", "32000"))
+    max_total_tokens: int = int(os.getenv("MAX_TOTAL_TOKENS", "30000"))
     """Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)."""
 
     conversation_history: list[dict[str, str]] = field(default_factory=list)
@@ -335,7 +338,8 @@ class QueryParam:
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
-    history_turns: int = 3
+    # Deprated: history message have negtive effect on query performance
+    history_turns: int = 0
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
     ids: list[str] | None = None
@@ -397,7 +401,6 @@ async def initialize_rag():
         llm_model_func=llm_model_func,
         embedding_func=EmbeddingFunc(
             embedding_dim=4096,
-            max_token_size=8192,
             func=embedding_func
         )
     )
@@ -426,7 +429,6 @@ rag = LightRAG(
     # Use Hugging Face embedding function
     embedding_func=EmbeddingFunc(
         embedding_dim=384,
-        max_token_size=5000,
         func=lambda texts: hf_embed(
             texts,
             tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
@@ -455,7 +457,6 @@ rag = LightRAG(
     # Use Ollama embedding function
     embedding_func=EmbeddingFunc(
         embedding_dim=768,
-        max_token_size=8192,
         func=lambda texts: ollama_embed(
             texts,
             embed_model="nomic-embed-text"
@@ -507,7 +508,6 @@ rag = LightRAG(
     # Use Ollama embedding function
     embedding_func=EmbeddingFunc(
         embedding_dim=768,
-        max_token_size=8192,
         func=lambda texts: ollama_embed(
             texts,
             embed_model="nomic-embed-text"
@@ -550,7 +550,6 @@ async def initialize_rag():
         llm_model_func=llama_index_complete_if_cache,  # LlamaIndex-compatible completion function
         embedding_func=EmbeddingFunc(    # LlamaIndex-compatible embedding function
             embedding_dim=1536,
-            max_token_size=8192,
             func=lambda texts: llama_index_embed(texts, embed_model=embed_model)
         ),
     )
@@ -599,37 +598,15 @@ if __name__ == "__main__":
 
 </details>
 
-### Conversation History Support
+### Rerank Function Injection
 
+To enhance retrieval quality, documents can be re-ranked based on a more effective relevance scoring model. The `rerank.py` file provides three Reranker provider driver functions:
 
-LightRAG now supports multi-turn dialogue through the conversation history feature. Here's how to use it:
+* **Cohere / vLLM**: `cohere_rerank`
+* **Jina AI**: `jina_rerank`
+* **Aliyun**: `ali_rerank`
 
-<details>
-  <summary> <b> Usage Example </b></summary>
-
-```python
-# Create conversation history
-conversation_history = [
-    {"role": "user", "content": "What is the main character's attitude towards Christmas?"},
-    {"role": "assistant", "content": "At the beginning of the story, Ebenezer Scrooge has a very negative attitude towards Christmas..."},
-    {"role": "user", "content": "How does his attitude change?"}
-]
-
-# Create query parameters with conversation history
-query_param = QueryParam(
-    mode="mix",  # or any other mode: "local", "global", "hybrid"
-    conversation_history=conversation_history,  # Add the conversation history
-    history_turns=3  # Number of recent conversation turns to consider
-)
-
-# Make a query that takes into account the conversation history
-response = rag.query(
-    "What causes this change in his character?",
-    param=query_param
-)
-```
-
-</details>
+You can inject one of these functions into the `rerank_model_func` attribute of the LightRAG object. This will enable LightRAG's query function to re-order retrieved text blocks using the injected function. For detailed usage, please refer to the `examples/rerank_example.py` file.
 
 ### User Prompt vs. Query
 
@@ -649,8 +626,6 @@ response_default = rag.query(
 )
 print(response_default)
 ```
-
-
 
 ### Insert
 
@@ -753,10 +728,58 @@ rag.insert(documents, file_paths=file_paths)
 
 ### Storage
 
-LightRAG uses four types of storage, each of which has multiple implementation options. When initializing LightRAG, the implementation schemes for these four types of storage can be set through parameters. For details, please refer to the previous LightRAG initialization parameters.
+LightRAG uses 4 types of storage for different purposes:
+
+* KV_STORAGE: llm response cache, text chunks, document information
+* VECTOR_STORAGE: entities vectors, relation vectors, chunks vectors
+* GRAPH_STORAGE: entity relation graph
+* DOC_STATUS_STORAGE: document indexing status
+
+Each storage type has several implementations:
+
+* KV_STORAGE supported implementations:
+
+```
+JsonKVStorage    JsonFile (default)
+PGKVStorage      Postgres
+RedisKVStorage   Redis
+MongoKVStorage   MongoDB
+```
+
+* GRAPH_STORAGE supported implementations:
+
+```
+NetworkXStorage      NetworkX (default)
+Neo4JStorage         Neo4J
+PGGraphStorage       PostgreSQL with AGE plugin
+MemgraphStorage.     Memgraph
+```
+
+> Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
+
+* VECTOR_STORAGE supported implementations:
+
+```
+NanoVectorDBStorage         NanoVector (default)
+PGVectorStorage             Postgres
+MilvusVectorDBStorage       Milvus
+FaissVectorDBStorage        Faiss
+QdrantVectorDBStorage       Qdrant
+MongoVectorDBStorage        MongoDB
+```
+
+* DOC_STATUS_STORAGE: supported implementations:
+
+```
+JsonDocStatusStorage        JsonFile (default)
+PGDocStatusStorage          Postgres
+MongoDocStatusStorage       MongoDB
+```
+
+Example connection configurations for each storage type can be found in the `env.example` file. The database instance in the connection string needs to be created by you on the database server beforehand. LightRAG is only responsible for creating tables within the database instance, not for creating the database instance itself. If using Redis as storage, remember to configure automatic data persistence rules for Redis, otherwise data will be lost after the Redis service restarts. If using PostgreSQL, it is recommended to use version 16.6 or above.
 
 <details>
-<summary> <b>Using Neo4J for Storage</b> </summary>
+<summary> <b>Using Neo4J Storage</b> </summary>
 
 * For production level scenarios you will most likely want to leverage an enterprise solution
 * for KG storage. Running Neo4J in Docker is recommended for seamless local testing.
@@ -795,60 +818,20 @@ see test_neo4j.py for a working example.
 </details>
 
 <details>
-<summary> <b>Using PostgreSQL for Storage</b> </summary>
+<summary> <b>Using PostgreSQL Storage</b> </summary>
 
-For production level scenarios you will most likely want to leverage an enterprise solution. PostgreSQL can provide a one-stop solution for you as KV store, VectorDB (pgvector) and GraphDB (apache AGE).
+For production level scenarios you will most likely want to leverage an enterprise solution. PostgreSQL can provide a one-stop solution for you as KV store, VectorDB (pgvector) and GraphDB (apache AGE). PostgreSQL version 16.6 or higher is supported.
 
 * PostgreSQL is lightweight,the whole binary distribution including all necessary plugins can be zipped to 40MB: Ref to [Windows Release](https://github.com/ShanGor/apache-age-windows/releases/tag/PG17%2Fv1.5.0-rc0) as it is easy to install for Linux/Mac.
 * If you prefer docker, please start with this image if you are a beginner to avoid hiccups (DO read the overview): https://hub.docker.com/r/shangor/postgres-for-rag
 * How to start? Ref to: [examples/lightrag_zhipu_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_zhipu_postgres_demo.py)
-* Create index for AGE example: (Change below `dickens` to your graph name if necessary)
-  ```sql
-  load 'age';
-  SET search_path = ag_catalog, "$user", public;
-  CREATE INDEX CONCURRENTLY entity_p_idx ON dickens."Entity" (id);
-  CREATE INDEX CONCURRENTLY vertex_p_idx ON dickens."_ag_label_vertex" (id);
-  CREATE INDEX CONCURRENTLY directed_p_idx ON dickens."DIRECTED" (id);
-  CREATE INDEX CONCURRENTLY directed_eid_idx ON dickens."DIRECTED" (end_id);
-  CREATE INDEX CONCURRENTLY directed_sid_idx ON dickens."DIRECTED" (start_id);
-  CREATE INDEX CONCURRENTLY directed_seid_idx ON dickens."DIRECTED" (start_id,end_id);
-  CREATE INDEX CONCURRENTLY edge_p_idx ON dickens."_ag_label_edge" (id);
-  CREATE INDEX CONCURRENTLY edge_sid_idx ON dickens."_ag_label_edge" (start_id);
-  CREATE INDEX CONCURRENTLY edge_eid_idx ON dickens."_ag_label_edge" (end_id);
-  CREATE INDEX CONCURRENTLY edge_seid_idx ON dickens."_ag_label_edge" (start_id,end_id);
-  create INDEX CONCURRENTLY vertex_idx_node_id ON dickens."_ag_label_vertex" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
-  create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
-  CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
-  ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-
-  -- drop if necessary
-  drop INDEX entity_p_idx;
-  drop INDEX vertex_p_idx;
-  drop INDEX directed_p_idx;
-  drop INDEX directed_eid_idx;
-  drop INDEX directed_sid_idx;
-  drop INDEX directed_seid_idx;
-  drop INDEX edge_p_idx;
-  drop INDEX edge_sid_idx;
-  drop INDEX edge_eid_idx;
-  drop INDEX edge_seid_idx;
-  drop INDEX vertex_idx_node_id;
-  drop INDEX entity_idx_node_id;
-  drop INDEX entity_node_id_gin_idx;
-  ```
-* Known issue of the Apache AGE: The released versions got below issue:
-  > You might find that the properties of the nodes/edges are empty.
-  > It is a known issue of the release version: https://github.com/apache/age/pull/1721
-  >
-  > You can Compile the AGE from source code and fix it.
-  >
+* For high-performance graph database requirements, Neo4j is recommended as Apache AGE's performance is not as competitive.
 
 </details>
 
 <details>
-<summary> <b>Using Faiss for Storage</b> </summary>
-You must manually install faiss-cpu or faiss-gpu before using FAISS vector db.
-Manually install `faiss-cpu` or `faiss-gpu` before using FAISS vector db.
+<summary> <b>Using Faiss Storage</b> </summary>
+Before using Faiss vector database, you must manually install `faiss-cpu` or `faiss-gpu`.
 
 - Install the required dependencies:
 
@@ -872,7 +855,6 @@ rag = LightRAG(
     llm_model_func=llm_model_func,
     embedding_func=EmbeddingFunc(
         embedding_dim=384,
-        max_token_size=8192,
         func=embedding_func,
     ),
     vector_storage="FaissVectorDBStorage",
@@ -915,6 +897,30 @@ async def initialize_rag():
     await initialize_pipeline_status()
 
     return rag
+```
+
+</details>
+
+<details>
+<summary> <b>Using MongoDB Storage</b> </summary>
+
+MongoDB provides a one-stop storage solution for LightRAG. MongoDB offers native KV storage and vector storage. LightRAG uses MongoDB collections to implement a simple graph storage. MongoDB's official vector search functionality (`$vectorSearch`) currently requires their official cloud service MongoDB Atlas. This functionality cannot be used on self-hosted MongoDB Community/Enterprise versions.
+
+</details>
+
+<details>
+<summary> <b>Using Redis Storage</b> </summary>
+
+LightRAG supports using Redis as KV storage. When using Redis storage, attention should be paid to persistence configuration and memory usage configuration. The following is the recommended Redis configuration:
+
+```
+save 900 1
+save 300 10
+save 60 1000
+stop-writes-on-bgsave-error yes
+maxmemory 4gb
+maxmemory-policy noeviction
+maxclients 500
 ```
 
 </details>
@@ -1278,7 +1284,6 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                 ),
                 embedding_func=EmbeddingFunc(
                     embedding_dim=3072,
-                    max_token_size=8192,
                     func=lambda texts: openai_embed(
                         texts,
                         model="text-embedding-3-large",

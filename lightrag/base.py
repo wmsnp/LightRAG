@@ -22,13 +22,50 @@ from .constants import (
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_HISTORY_TURNS,
-    DEFAULT_ENABLE_RERANK,
+    DEFAULT_OLLAMA_MODEL_NAME,
+    DEFAULT_OLLAMA_MODEL_TAG,
+    DEFAULT_OLLAMA_MODEL_SIZE,
+    DEFAULT_OLLAMA_CREATED_AT,
+    DEFAULT_OLLAMA_DIGEST,
 )
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
+
+
+class OllamaServerInfos:
+    def __init__(self, name=None, tag=None):
+        self._lightrag_name = name or os.getenv(
+            "OLLAMA_EMULATING_MODEL_NAME", DEFAULT_OLLAMA_MODEL_NAME
+        )
+        self._lightrag_tag = tag or os.getenv(
+            "OLLAMA_EMULATING_MODEL_TAG", DEFAULT_OLLAMA_MODEL_TAG
+        )
+        self.LIGHTRAG_SIZE = DEFAULT_OLLAMA_MODEL_SIZE
+        self.LIGHTRAG_CREATED_AT = DEFAULT_OLLAMA_CREATED_AT
+        self.LIGHTRAG_DIGEST = DEFAULT_OLLAMA_DIGEST
+
+    @property
+    def LIGHTRAG_NAME(self):
+        return self._lightrag_name
+
+    @LIGHTRAG_NAME.setter
+    def LIGHTRAG_NAME(self, value):
+        self._lightrag_name = value
+
+    @property
+    def LIGHTRAG_TAG(self):
+        return self._lightrag_tag
+
+    @LIGHTRAG_TAG.setter
+    def LIGHTRAG_TAG(self, value):
+        self._lightrag_tag = value
+
+    @property
+    def LIGHTRAG_MODEL(self):
+        return f"{self._lightrag_name}:{self._lightrag_tag}"
 
 
 class TextChunkSchema(TypedDict):
@@ -95,16 +132,15 @@ class QueryParam:
     ll_keywords: list[str] = field(default_factory=list)
     """List of low-level keywords to refine retrieval focus."""
 
+    # TODO: Deprecated - history message have negtive effect on query performance
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
+    # TODO: Deprecated - history message have negtive effect on query performance
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
-
-    ids: list[str] | None = None
-    """List of ids to filter the results."""
 
     model_func: Callable[..., object] | None = None
     """Optional override for the LLM model function to use for this specific query.
@@ -117,9 +153,7 @@ class QueryParam:
     If proivded, this will be use instead of the default vaulue from prompt template.
     """
 
-    enable_rerank: bool = (
-        os.getenv("ENABLE_RERANK", str(DEFAULT_ENABLE_RERANK).lower()).lower() == "true"
-    )
+    enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
     """
@@ -180,9 +214,16 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
+        self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
-        """Query the vector storage and retrieve top_k results."""
+        """Query the vector storage and retrieve top_k results.
+
+        Args:
+            query: The query string to search for
+            top_k: Number of top results to return
+            query_embedding: Optional pre-computed embedding for the query.
+                           If provided, skips embedding computation for better performance.
+        """
 
     @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
@@ -251,6 +292,19 @@ class BaseVectorStorage(StorageNameSpace, ABC):
             ids: List of vector IDs to be deleted
         """
 
+    @abstractmethod
+    async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
+        """Get vectors by their IDs, returning only ID and vector data for efficiency
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            Dictionary mapping IDs to their vector embeddings
+            Format: {id: [vector_values], ...}
+        """
+        pass
+
 
 @dataclass
 class BaseKVStorage(StorageNameSpace, ABC):
@@ -290,21 +344,6 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
         Returns:
             None
-        """
-
-    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
-        """Delete specific records from storage by cache mode
-
-        Importance notes for in-memory storage:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. update flags to notify other processes that data persistence is needed
-
-        Args:
-            modes (list[str]): List of cache modes to be dropped from storage
-
-        Returns:
-             True: if the cache drop successfully
-             False: if the cache drop failed, or the cache mode is not supported
         """
 
 
@@ -617,6 +656,23 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             indicating whether the graph was truncated due to max_nodes limit
         """
 
+    @abstractmethod
+    async def get_all_nodes(self) -> list[dict]:
+        """Get all nodes in the graph.
+
+        Returns:
+            A list of all nodes, where each node is a dictionary of its properties
+            (Edge is bidirectional for some storage implementation; deduplication must be handled by the caller)
+        """
+
+    @abstractmethod
+    async def get_all_edges(self) -> list[dict]:
+        """Get all edges in the graph.
+
+        Returns:
+            A list of all edges, where each edge is a dictionary of its properties
+        """
+
 
 class DocStatus(str, Enum):
     """Document processing status"""
@@ -631,8 +687,6 @@ class DocStatus(str, Enum):
 class DocProcessingStatus:
     """Document processing status data structure"""
 
-    content: str
-    """Original content of the document"""
     content_summary: str
     """First 100 chars of document content, used for preview"""
     content_length: int
@@ -645,11 +699,13 @@ class DocProcessingStatus:
     """ISO format timestamp when document was created"""
     updated_at: str
     """ISO format timestamp when document was last updated"""
+    track_id: str | None = None
+    """Tracking ID for monitoring progress"""
     chunks_count: int | None = None
     """Number of chunks after splitting, used for processing"""
     chunks_list: list[str] | None = field(default_factory=list)
     """List of chunk IDs associated with this document, used for deletion"""
-    error: str | None = None
+    error_msg: str | None = None
     """Error message if failed"""
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional metadata"""
@@ -669,9 +725,41 @@ class DocStatusStorage(BaseKVStorage, ABC):
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
 
-    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
-        """Drop cache is not supported for Doc Status storage"""
-        return False
+    @abstractmethod
+    async def get_docs_by_track_id(
+        self, track_id: str
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents with a specific track_id"""
+
+    @abstractmethod
+    async def get_docs_paginated(
+        self,
+        status_filter: DocStatus | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        sort_field: str = "updated_at",
+        sort_direction: str = "desc",
+    ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
+        """Get documents with pagination support
+
+        Args:
+            status_filter: Filter by document status, None for all statuses
+            page: Page number (1-based)
+            page_size: Number of documents per page (10-200)
+            sort_field: Field to sort by ('created_at', 'updated_at', 'id')
+            sort_direction: Sort direction ('asc' or 'desc')
+
+        Returns:
+            Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
+        """
+
+    @abstractmethod
+    async def get_all_status_counts(self) -> dict[str, int]:
+        """Get counts of documents in each status for all documents
+
+        Returns:
+            Dictionary mapping status names to counts
+        """
 
 
 class StoragesStatus(str, Enum):

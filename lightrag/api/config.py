@@ -7,6 +7,13 @@ import argparse
 import logging
 from dotenv import load_dotenv
 from lightrag.utils import get_env_value
+from lightrag.llm.binding_options import (
+    OllamaEmbeddingOptions,
+    OllamaLLMOptions,
+    OpenAILLMOptions,
+)
+from lightrag.base import OllamaServerInfos
+import sys
 
 from lightrag.constants import (
     DEFAULT_WOKERS,
@@ -23,53 +30,21 @@ from lightrag.constants import (
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
     DEFAULT_MAX_ASYNC,
     DEFAULT_SUMMARY_MAX_TOKENS,
+    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
+    DEFAULT_SUMMARY_CONTEXT_SIZE,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
     DEFAULT_EMBEDDING_BATCH_NUM,
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
-    DEFAULT_OLLAMA_MODEL_SIZE,
-    DEFAULT_OLLAMA_CREATED_AT,
-    DEFAULT_OLLAMA_DIGEST,
+    DEFAULT_RERANK_BINDING,
+    DEFAULT_ENTITY_TYPES,
 )
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
-
-
-class OllamaServerInfos:
-    def __init__(self, name=None, tag=None):
-        self._lightrag_name = name or os.getenv(
-            "OLLAMA_EMULATING_MODEL_NAME", DEFAULT_OLLAMA_MODEL_NAME
-        )
-        self._lightrag_tag = tag or os.getenv(
-            "OLLAMA_EMULATING_MODEL_TAG", DEFAULT_OLLAMA_MODEL_TAG
-        )
-        self.LIGHTRAG_SIZE = DEFAULT_OLLAMA_MODEL_SIZE
-        self.LIGHTRAG_CREATED_AT = DEFAULT_OLLAMA_CREATED_AT
-        self.LIGHTRAG_DIGEST = DEFAULT_OLLAMA_DIGEST
-
-    @property
-    def LIGHTRAG_NAME(self):
-        return self._lightrag_name
-
-    @LIGHTRAG_NAME.setter
-    def LIGHTRAG_NAME(self, value):
-        self._lightrag_name = value
-
-    @property
-    def LIGHTRAG_TAG(self):
-        return self._lightrag_tag
-
-    @LIGHTRAG_TAG.setter
-    def LIGHTRAG_TAG(self, value):
-        self._lightrag_tag = value
-
-    @property
-    def LIGHTRAG_MODEL(self):
-        return f"{self._lightrag_name}:{self._lightrag_tag}"
 
 
 ollama_server_infos = OllamaServerInfos()
@@ -105,9 +80,7 @@ def parse_args() -> argparse.Namespace:
         argparse.Namespace: Parsed arguments
     """
 
-    parser = argparse.ArgumentParser(
-        description="LightRAG FastAPI Server with separate working and input directories"
-    )
+    parser = argparse.ArgumentParser(description="LightRAG API Server")
 
     # Server configuration
     parser.add_argument(
@@ -149,10 +122,26 @@ def parse_args() -> argparse.Namespace:
         help=f"Maximum async operations (default: from env or {DEFAULT_MAX_ASYNC})",
     )
     parser.add_argument(
-        "--max-tokens",
+        "--summary-max-tokens",
         type=int,
-        default=get_env_value("MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS, int),
-        help=f"Maximum token size (default: from env or {DEFAULT_SUMMARY_MAX_TOKENS})",
+        default=get_env_value("SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS, int),
+        help=f"Maximum token size for entity/relation summary(default: from env or {DEFAULT_SUMMARY_MAX_TOKENS})",
+    )
+    parser.add_argument(
+        "--summary-context-size",
+        type=int,
+        default=get_env_value(
+            "SUMMARY_CONTEXT_SIZE", DEFAULT_SUMMARY_CONTEXT_SIZE, int
+        ),
+        help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_CONTEXT_SIZE})",
+    )
+    parser.add_argument(
+        "--summary-length-recommended",
+        type=int,
+        default=get_env_value(
+            "SUMMARY_LENGTH_RECOMMENDED", DEFAULT_SUMMARY_LENGTH_RECOMMENDED, int
+        ),
+        help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_LENGTH_RECOMMENDED})",
     )
 
     # Logging configuration
@@ -237,16 +226,67 @@ def parse_args() -> argparse.Namespace:
         "--llm-binding",
         type=str,
         default=get_env_value("LLM_BINDING", "ollama"),
-        choices=["lollms", "ollama", "openai", "openai-ollama", "azure_openai"],
+        choices=[
+            "lollms",
+            "ollama",
+            "openai",
+            "openai-ollama",
+            "azure_openai",
+            "aws_bedrock",
+        ],
         help="LLM binding type (default: from env or ollama)",
     )
     parser.add_argument(
         "--embedding-binding",
         type=str,
         default=get_env_value("EMBEDDING_BINDING", "ollama"),
-        choices=["lollms", "ollama", "openai", "azure_openai"],
+        choices=["lollms", "ollama", "openai", "azure_openai", "aws_bedrock", "jina"],
         help="Embedding binding type (default: from env or ollama)",
     )
+    parser.add_argument(
+        "--rerank-binding",
+        type=str,
+        default=get_env_value("RERANK_BINDING", DEFAULT_RERANK_BINDING),
+        choices=["null", "cohere", "jina", "aliyun"],
+        help=f"Rerank binding type (default: from env or {DEFAULT_RERANK_BINDING})",
+    )
+
+    # Conditionally add binding options defined in binding_options module
+    # This will add command line arguments for all binding options (e.g., --ollama-embedding-num_ctx)
+    # and corresponding environment variables (e.g., OLLAMA_EMBEDDING_NUM_CTX)
+    if "--llm-binding" in sys.argv:
+        try:
+            idx = sys.argv.index("--llm-binding")
+            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "ollama":
+                OllamaLLMOptions.add_args(parser)
+        except IndexError:
+            pass
+    elif os.environ.get("LLM_BINDING") == "ollama":
+        OllamaLLMOptions.add_args(parser)
+
+    if "--embedding-binding" in sys.argv:
+        try:
+            idx = sys.argv.index("--embedding-binding")
+            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "ollama":
+                OllamaEmbeddingOptions.add_args(parser)
+        except IndexError:
+            pass
+    elif os.environ.get("EMBEDDING_BINDING") == "ollama":
+        OllamaEmbeddingOptions.add_args(parser)
+
+    # Add OpenAI LLM options when llm-binding is openai or azure_openai
+    if "--llm-binding" in sys.argv:
+        try:
+            idx = sys.argv.index("--llm-binding")
+            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] in [
+                "openai",
+                "azure_openai",
+            ]:
+                OpenAILLMOptions.add_args(parser)
+        except IndexError:
+            pass
+    elif os.environ.get("LLM_BINDING") in ["openai", "azure_openai"]:
+        OpenAILLMOptions.add_args(parser)
 
     args = parser.parse_args()
 
@@ -295,7 +335,6 @@ def parse_args() -> argparse.Namespace:
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
     args.embedding_model = get_env_value("EMBEDDING_MODEL", "bge-m3:latest")
     args.embedding_dim = get_env_value("EMBEDDING_DIM", 1024, int)
-    args.max_embed_tokens = get_env_value("MAX_EMBED_TOKENS", 8192, int)
 
     # Inject chunk configuration
     args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
@@ -307,15 +346,13 @@ def parse_args() -> argparse.Namespace:
     )
     args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
 
-    # Inject LLM temperature configuration
-    args.temperature = get_env_value("TEMPERATURE", 0.5, float)
-
     # Select Document loading tool (DOCLING, DEFAULT)
     args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
 
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
+    args.entity_types = get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list)
     args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
 
     # For JWT Auth
@@ -326,9 +363,10 @@ def parse_args() -> argparse.Namespace:
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
 
     # Rerank model configuration
-    args.rerank_model = get_env_value("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+    args.rerank_model = get_env_value("RERANK_MODEL", None)
     args.rerank_binding_host = get_env_value("RERANK_BINDING_HOST", None)
     args.rerank_binding_api_key = get_env_value("RERANK_BINDING_API_KEY", None)
+    # Note: rerank_binding is already set by argparse, no need to override from env
 
     # Min rerank score configuration
     args.min_rerank_score = get_env_value(
@@ -379,7 +417,7 @@ def update_uvicorn_mode_config():
         global_args.workers = 1
         # Log warning directly here
         logging.warning(
-            f"In uvicorn mode, workers parameter was set to {original_workers}. Forcing workers=1"
+            f">> Forcing workers=1 in uvicorn mode(Ignoring workers={original_workers})"
         )
 
 

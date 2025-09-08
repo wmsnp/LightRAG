@@ -50,6 +50,8 @@
       "confirmPlaceholder": "اكتب yes للتأكيد",
       "clearCache": "مسح كاش نموذج اللغة",
       "confirmButton": "نعم",
+      "clearing": "جارٍ المسح...",
+      "timeout": "انتهت مهلة عملية المسح، يرجى المحاولة مرة أخرى",
       "success": "تم مسح المستندات بنجاح",
       "cacheCleared": "تم مسح ذاكرة التخزين المؤقت بنجاح",
       "cacheClearFailed": "فشل مسح ذاكرة التخزين المؤقت:\n{{error}}",
@@ -72,15 +74,11 @@
       "failed": "فشل حذف المستندات:\n{{message}}",
       "error": "فشل حذف المستندات:\n{{error}}",
       "busy": "خط المعالجة مشغول، يرجى المحاولة مرة أخرى لاحقًا",
-      "notAllowed": "لا توجد صلاحية لتنفيذ هذه العملية",
-      "cannotDeleteAll": "لا يمكن حذف جميع المستندات. إذا كنت بحاجة لحذف جميع المستندات، يرجى استخدام ميزة مسح المستندات."
+      "notAllowed": "لا توجد صلاحية لتنفيذ هذه العملية"
     },
-    "deselectDocuments": {
-      "button": "إلغاء التحديد",
-      "tooltip": "إلغاء تحديد جميع المستندات المحددة",
-      "title": "إلغاء تحديد المستندات",
-      "description": "سيؤدي هذا إلى مسح جميع المستندات المحددة ({{count}} محدد)",
-      "confirmButton": "إلغاء تحديد الكل"
+    "selectDocuments": {
+      "selectCurrentPage": "تحديد الصفحة الحالية ({{count}})",
+      "deselectAll": "إلغاء تحديد الكل ({{count}})"
     },
     "uploadDocuments": {
       "button": "رفع",
@@ -117,6 +115,7 @@
       "title": "إدارة المستندات",
       "scanButton": "مسح ضوئي",
       "scanTooltip": "مسح المستندات ضوئيًا في مجلد الإدخال",
+      "refreshTooltip": "إعادة تعيين قائمة المستندات",
       "pipelineStatusButton": "حالة خط المعالجة",
       "pipelineStatusTooltip": "عرض حالة خط المعالجة",
       "uploadedTitle": "المستندات المرفوعة",
@@ -125,6 +124,7 @@
       "emptyDescription": "لا توجد مستندات مرفوعة بعد.",
       "columns": {
         "id": "المعرف",
+        "fileName": "اسم الملف",
         "summary": "الملخص",
         "status": "الحالة",
         "length": "الطول",
@@ -187,7 +187,10 @@
       "unknown": "غير معروف",
       "object": "مصنوع",
       "group": "مجموعة",
-      "technology": "العلوم"
+      "technology": "العلوم",
+      "product": "منتج",
+      "document": "وثيقة",
+      "other": "أخرى"
     },
     "sideBar": {
       "settings": {
@@ -334,7 +337,10 @@
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "نسخ إلى الحافظة",
-      "copyError": "فشل نسخ النص إلى الحافظة"
+      "copyError": "فشل نسخ النص إلى الحافظة",
+      "thinking": "جاري التفكير...",
+      "thinkingTime": "وقت التفكير {{time}} ثانية",
+      "thinkingInProgress": "التفكير قيد التقدم..."
     },
     "retrieval": {
       "startPrompt": "ابدأ الاسترجاع بكتابة استفسارك أدناه",
@@ -401,5 +407,14 @@
     "description": "الرجاء إدخال مفتاح واجهة برمجة التطبيقات للوصول إلى الخدمة",
     "placeholder": "أدخل مفتاح واجهة برمجة التطبيقات",
     "save": "حفظ"
+  },
+  "pagination": {
+    "showing": "عرض {{start}} إلى {{end}} من أصل {{total}} إدخالات",
+    "page": "الصفحة",
+    "pageSize": "حجم الصفحة",
+    "firstPage": "الصفحة الأولى",
+    "prevPage": "الصفحة السابقة",
+    "nextPage": "الصفحة التالية",
+    "lastPage": "الصفحة الأخيرة"
   }
 }

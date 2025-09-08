@@ -9,12 +9,15 @@ import logging
 import logging.handlers
 import os
 import re
+import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from functools import wraps
 from hashlib import md5
-from typing import Any, Protocol, Callable, TYPE_CHECKING, List
+from typing import Any, Protocol, Callable, TYPE_CHECKING, List, Optional
 import numpy as np
 from dotenv import load_dotenv
+
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -23,6 +26,79 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_MAX_FILE_PATH_LENGTH,
 )
+
+# Initialize logger with basic configuration
+logger = logging.getLogger("lightrag")
+logger.propagate = False  # prevent log message send to root logger
+logger.setLevel(logging.INFO)
+
+# Add console handler if no handlers exist
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(levelname)s: %(message)s")
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+# Set httpx logging level to WARNING
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# Global import for pypinyin with startup-time logging
+try:
+    import pypinyin
+
+    _PYPINYIN_AVAILABLE = True
+    # logger.info("pypinyin loaded successfully for Chinese pinyin sorting")
+except ImportError:
+    pypinyin = None
+    _PYPINYIN_AVAILABLE = False
+    logger.warning(
+        "pypinyin is not installed. Chinese pinyin sorting will use simple string sorting."
+    )
+
+
+async def safe_vdb_operation_with_exception(
+    operation: Callable,
+    operation_name: str,
+    entity_name: str = "",
+    max_retries: int = 3,
+    retry_delay: float = 0.2,
+    logger_func: Optional[Callable] = None,
+) -> None:
+    """
+    Safely execute vector database operations with retry mechanism and exception handling.
+
+    This function ensures that VDB operations are executed with proper error handling
+    and retry logic. If all retries fail, it raises an exception to maintain data consistency.
+
+    Args:
+        operation: The async operation to execute
+        operation_name: Operation name for logging purposes
+        entity_name: Entity name for logging purposes
+        max_retries: Maximum number of retry attempts
+        retry_delay: Delay between retries in seconds
+        logger_func: Logger function to use for error messages
+
+    Raises:
+        Exception: When operation fails after all retry attempts
+    """
+    log_func = logger_func or logger.warning
+
+    for attempt in range(max_retries):
+        try:
+            await operation()
+            return  # Success, return immediately
+        except Exception as e:
+            if attempt >= max_retries - 1:
+                error_msg = f"VDB {operation_name} failed for {entity_name} after {max_retries} attempts: {e}"
+                log_func(error_msg)
+                raise Exception(error_msg) from e
+            else:
+                log_func(
+                    f"VDB {operation_name} attempt {attempt + 1} failed for {entity_name}: {e}, retrying..."
+                )
+                if retry_delay > 0:
+                    await asyncio.sleep(retry_delay)
 
 
 def get_env_value(
@@ -50,6 +126,27 @@ def get_env_value(
 
     if value_type is bool:
         return value.lower() in ("true", "1", "yes", "t", "on")
+
+    # Handle list type with JSON parsing
+    if value_type is list:
+        try:
+            import json
+
+            parsed_value = json.loads(value)
+            # Ensure the parsed value is actually a list
+            if isinstance(parsed_value, list):
+                return parsed_value
+            else:
+                logger.warning(
+                    f"Environment variable {env_key} is not a valid JSON list, using default"
+                )
+                return default
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(
+                f"Failed to parse {env_key} as JSON list: {e}, using default"
+            )
+            return default
+
     try:
         return value_type(value)
     except (ValueError, TypeError):
@@ -58,7 +155,7 @@ def get_env_value(
 
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
-    from lightrag.base import BaseKVStorage, QueryParam
+    from lightrag.base import BaseKVStorage, BaseVectorStorage, QueryParam
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -103,15 +200,6 @@ def set_verbose_debug(enabled: bool):
 
 statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
 
-# Initialize logger
-logger = logging.getLogger("lightrag")
-logger.propagate = False  # prevent log message send to root loggger
-# Let the main application configure the handlers
-logger.setLevel(logging.INFO)
-
-# Set httpx logging level to WARNING
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
 
 class LightragPathFilter(logging.Filter):
     """Filter for lightrag logger to filter out frequent path access logs"""
@@ -121,6 +209,7 @@ class LightragPathFilter(logging.Filter):
         # Define paths to be filtered
         self.filtered_paths = [
             "/documents",
+            "/documents/paginated",
             "/health",
             "/webui/",
             "/documents/pipeline_status",
@@ -143,6 +232,7 @@ class LightragPathFilter(logging.Filter):
             # Filter out successful GET requests to filtered paths
             if (
                 method == "GET"
+                or method == "POST"
                 and (status == 200 or status == 304)
                 and path in self.filtered_paths
             ):
@@ -235,67 +325,55 @@ class UnlimitedSemaphore:
 
 
 @dataclass
+class TaskState:
+    """Task state tracking for priority queue management"""
+
+    future: asyncio.Future
+    start_time: float
+    execution_start_time: float = None
+    worker_started: bool = False
+    cancellation_requested: bool = False
+    cleanup_done: bool = False
+
+
+@dataclass
 class EmbeddingFunc:
     embedding_dim: int
-    max_token_size: int
     func: callable
-    # concurrent_limit: int = 16
+    max_token_size: int | None = None  # deprecated keep it for compatible only
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         return await self.func(*args, **kwargs)
 
 
-def locate_json_string_body_from_string(content: str) -> str | None:
-    """Locate the JSON string body from a string"""
-    try:
-        maybe_json_str = re.search(r"{.*}", content, re.DOTALL)
-        if maybe_json_str is not None:
-            maybe_json_str = maybe_json_str.group(0)
-            maybe_json_str = maybe_json_str.replace("\\n", "")
-            maybe_json_str = maybe_json_str.replace("\n", "")
-            maybe_json_str = maybe_json_str.replace("'", '"')
-            # json.loads(maybe_json_str) # don't check here, cannot validate schema after all
-            return maybe_json_str
-    except Exception:
-        pass
-        # try:
-        #     content = (
-        #         content.replace(kw_prompt[:-1], "")
-        #         .replace("user", "")
-        #         .replace("model", "")
-        #         .strip()
-        #     )
-        #     maybe_json_str = "{" + content.split("{")[1].split("}")[0] + "}"
-        #     json.loads(maybe_json_str)
-
-        return None
-
-
-def convert_response_to_json(response: str) -> dict[str, Any]:
-    json_str = locate_json_string_body_from_string(response)
-    assert json_str is not None, f"Unable to parse JSON from response: {response}"
-    try:
-        data = json.loads(json_str)
-        return data
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON: {json_str}")
-        raise e from None
-
-
 def compute_args_hash(*args: Any) -> str:
-    """Compute a hash for the given arguments.
+    """Compute a hash for the given arguments with safe Unicode handling.
+
     Args:
         *args: Arguments to hash
     Returns:
         str: Hash string
     """
-    import hashlib
-
     # Convert all arguments to strings and join them
     args_str = "".join([str(arg) for arg in args])
 
-    # Compute MD5 hash
-    return hashlib.md5(args_str.encode()).hexdigest()
+    # Use 'replace' error handling to safely encode problematic Unicode characters
+    # This replaces invalid characters with Unicode replacement character (U+FFFD)
+    try:
+        return md5(args_str.encode("utf-8")).hexdigest()
+    except UnicodeEncodeError:
+        # Handle surrogate characters and other encoding issues
+        safe_bytes = args_str.encode("utf-8", errors="replace")
+        return md5(safe_bytes).hexdigest()
+
+
+def compute_mdhash_id(content: str, prefix: str = "") -> str:
+    """
+    Compute a unique ID for a given content string.
+
+    The ID is a combination of the given prefix and the MD5 hash of the content string.
+    """
+    return prefix + compute_args_hash(content)
 
 
 def generate_cache_key(mode: str, cache_type: str, hash_value: str) -> str:
@@ -327,29 +405,60 @@ def parse_cache_key(cache_key: str) -> tuple[str, str, str] | None:
     return None
 
 
-def compute_mdhash_id(content: str, prefix: str = "") -> str:
-    """
-    Compute a unique ID for a given content string.
-
-    The ID is a combination of the given prefix and the MD5 hash of the content string.
-    """
-    return prefix + md5(content.encode()).hexdigest()
-
-
-# Custom exception class
+# Custom exception classes
 class QueueFullError(Exception):
     """Raised when the queue is full and the wait times out"""
 
     pass
 
 
-def priority_limit_async_func_call(max_size: int, max_queue_size: int = 1000):
+class WorkerTimeoutError(Exception):
+    """Worker-level timeout exception with specific timeout information"""
+
+    def __init__(self, timeout_value: float, timeout_type: str = "execution"):
+        self.timeout_value = timeout_value
+        self.timeout_type = timeout_type
+        super().__init__(f"Worker {timeout_type} timeout after {timeout_value}s")
+
+
+class HealthCheckTimeoutError(Exception):
+    """Health Check-level timeout exception"""
+
+    def __init__(self, timeout_value: float, execution_duration: float):
+        self.timeout_value = timeout_value
+        self.execution_duration = execution_duration
+        super().__init__(
+            f"Task forcefully terminated due to execution timeout (>{timeout_value}s, actual: {execution_duration:.1f}s)"
+        )
+
+
+def priority_limit_async_func_call(
+    max_size: int,
+    llm_timeout: float = None,
+    max_execution_timeout: float = None,
+    max_task_duration: float = None,
+    max_queue_size: int = 1000,
+    cleanup_timeout: float = 2.0,
+    queue_name: str = "limit_async",
+):
     """
-    Enhanced priority-limited asynchronous function call decorator
+    Enhanced priority-limited asynchronous function call decorator with robust timeout handling
+
+    This decorator provides a comprehensive solution for managing concurrent LLM requests with:
+    - Multi-layer timeout protection (LLM -> Worker -> Health Check -> User)
+    - Task state tracking to prevent race conditions
+    - Enhanced health check system with stuck task detection
+    - Proper resource cleanup and error recovery
 
     Args:
         max_size: Maximum number of concurrent calls
         max_queue_size: Maximum queue capacity to prevent memory overflow
+        llm_timeout: LLM provider timeout (from global config), used to calculate other timeouts
+        max_execution_timeout: Maximum time for worker to execute function (defaults to llm_timeout + 30s)
+        max_task_duration: Maximum time before health check intervenes (defaults to llm_timeout + 60s)
+        cleanup_timeout: Maximum time to wait for cleanup operations (defaults to 2.0s)
+        queue_name: Optional queue name for logging identification (defaults to "limit_async")
+
     Returns:
         Decorator function
     """
@@ -358,108 +467,197 @@ def priority_limit_async_func_call(max_size: int, max_queue_size: int = 1000):
         # Ensure func is callable
         if not callable(func):
             raise TypeError(f"Expected a callable object, got {type(func)}")
+
+        # Calculate timeout hierarchy if llm_timeout is provided (Dynamic Timeout Calculation)
+        if llm_timeout is not None:
+            nonlocal max_execution_timeout, max_task_duration
+            if max_execution_timeout is None:
+                max_execution_timeout = (
+                    llm_timeout * 2
+                )  # Reserved timeout buffer for low-level retry
+            if max_task_duration is None:
+                max_task_duration = (
+                    llm_timeout * 2 + 15
+                )  # Reserved timeout buffer for health check phase
+
         queue = asyncio.PriorityQueue(maxsize=max_queue_size)
         tasks = set()
         initialization_lock = asyncio.Lock()
         counter = 0
         shutdown_event = asyncio.Event()
-        initialized = False  # Global initialization flag
+        initialized = False
         worker_health_check_task = None
 
-        # Track active future objects for cleanup
+        # Enhanced task state management
+        task_states = {}  # task_id -> TaskState
+        task_states_lock = asyncio.Lock()
         active_futures = weakref.WeakSet()
-        reinit_count = 0  # Reinitialization counter to track system health
+        reinit_count = 0
 
-        # Worker function to process tasks in the queue
         async def worker():
-            """Worker that processes tasks in the priority queue"""
+            """Enhanced worker that processes tasks with proper timeout and state management"""
             try:
                 while not shutdown_event.is_set():
                     try:
-                        # Use timeout to get tasks, allowing periodic checking of shutdown signal
+                        # Get task from queue with timeout for shutdown checking
                         try:
                             (
                                 priority,
                                 count,
-                                future,
+                                task_id,
                                 args,
                                 kwargs,
                             ) = await asyncio.wait_for(queue.get(), timeout=1.0)
                         except asyncio.TimeoutError:
-                            # Timeout is just to check shutdown signal, continue to next iteration
                             continue
 
-                        # If future is cancelled, skip execution
-                        if future.cancelled():
+                        # Get task state and mark worker as started
+                        async with task_states_lock:
+                            if task_id not in task_states:
+                                queue.task_done()
+                                continue
+                            task_state = task_states[task_id]
+                            task_state.worker_started = True
+                            # Record execution start time when worker actually begins processing
+                            task_state.execution_start_time = (
+                                asyncio.get_event_loop().time()
+                            )
+
+                        # Check if task was cancelled before worker started
+                        if (
+                            task_state.cancellation_requested
+                            or task_state.future.cancelled()
+                        ):
+                            async with task_states_lock:
+                                task_states.pop(task_id, None)
                             queue.task_done()
                             continue
 
                         try:
-                            # Execute function
-                            result = await func(*args, **kwargs)
-                            # If future is not done, set the result
-                            if not future.done():
-                                future.set_result(result)
-                        except asyncio.CancelledError:
-                            if not future.done():
-                                future.cancel()
-                            logger.debug("limit_async: Task cancelled during execution")
-                        except Exception as e:
-                            logger.error(
-                                f"limit_async: Error in decorated function: {str(e)}"
-                            )
-                            if not future.done():
-                                future.set_exception(e)
-                        finally:
-                            queue.task_done()
-                    except Exception as e:
-                        # Catch all exceptions in worker loop to prevent worker termination
-                        logger.error(f"limit_async: Critical error in worker: {str(e)}")
-                        await asyncio.sleep(0.1)  # Prevent high CPU usage
-            finally:
-                logger.debug("limit_async: Worker exiting")
+                            # Execute function with timeout protection
+                            if max_execution_timeout is not None:
+                                result = await asyncio.wait_for(
+                                    func(*args, **kwargs), timeout=max_execution_timeout
+                                )
+                            else:
+                                result = await func(*args, **kwargs)
 
-        async def health_check():
-            """Periodically check worker health status and recover"""
+                            # Set result if future is still valid
+                            if not task_state.future.done():
+                                task_state.future.set_result(result)
+
+                        except asyncio.TimeoutError:
+                            # Worker-level timeout (max_execution_timeout exceeded)
+                            logger.warning(
+                                f"{queue_name}: Worker timeout for task {task_id} after {max_execution_timeout}s"
+                            )
+                            if not task_state.future.done():
+                                task_state.future.set_exception(
+                                    WorkerTimeoutError(
+                                        max_execution_timeout, "execution"
+                                    )
+                                )
+                        except asyncio.CancelledError:
+                            # Task was cancelled during execution
+                            if not task_state.future.done():
+                                task_state.future.cancel()
+                            logger.debug(
+                                f"{queue_name}: Task {task_id} cancelled during execution"
+                            )
+                        except Exception as e:
+                            # Function execution error
+                            logger.error(
+                                f"{queue_name}: Error in decorated function for task {task_id}: {str(e)}"
+                            )
+                            if not task_state.future.done():
+                                task_state.future.set_exception(e)
+                        finally:
+                            # Clean up task state
+                            async with task_states_lock:
+                                task_states.pop(task_id, None)
+                            queue.task_done()
+
+                    except Exception as e:
+                        # Critical error in worker loop
+                        logger.error(
+                            f"{queue_name}: Critical error in worker: {str(e)}"
+                        )
+                        await asyncio.sleep(0.1)
+            finally:
+                logger.debug(f"{queue_name}: Worker exiting")
+
+        async def enhanced_health_check():
+            """Enhanced health check with stuck task detection and recovery"""
             nonlocal initialized
             try:
                 while not shutdown_event.is_set():
                     await asyncio.sleep(5)  # Check every 5 seconds
 
-                    # No longer acquire lock, directly operate on task set
-                    # Use a copy of the task set to avoid concurrent modification
+                    current_time = asyncio.get_event_loop().time()
+
+                    # Detect and handle stuck tasks based on execution start time
+                    if max_task_duration is not None:
+                        stuck_tasks = []
+                        async with task_states_lock:
+                            for task_id, task_state in list(task_states.items()):
+                                # Only check tasks that have started execution
+                                if (
+                                    task_state.worker_started
+                                    and task_state.execution_start_time is not None
+                                    and current_time - task_state.execution_start_time
+                                    > max_task_duration
+                                ):
+                                    stuck_tasks.append(
+                                        (
+                                            task_id,
+                                            current_time
+                                            - task_state.execution_start_time,
+                                        )
+                                    )
+
+                        # Force cleanup of stuck tasks
+                        for task_id, execution_duration in stuck_tasks:
+                            logger.warning(
+                                f"{queue_name}: Detected stuck task {task_id} (execution time: {execution_duration:.1f}s), forcing cleanup"
+                            )
+                            async with task_states_lock:
+                                if task_id in task_states:
+                                    task_state = task_states[task_id]
+                                    if not task_state.future.done():
+                                        task_state.future.set_exception(
+                                            HealthCheckTimeoutError(
+                                                max_task_duration, execution_duration
+                                            )
+                                        )
+                                    task_states.pop(task_id, None)
+
+                    # Worker recovery logic
                     current_tasks = set(tasks)
                     done_tasks = {t for t in current_tasks if t.done()}
                     tasks.difference_update(done_tasks)
 
-                    # Calculate active tasks count
                     active_tasks_count = len(tasks)
                     workers_needed = max_size - active_tasks_count
 
                     if workers_needed > 0:
                         logger.info(
-                            f"limit_async: Creating {workers_needed} new workers"
+                            f"{queue_name}: Creating {workers_needed} new workers"
                         )
                         new_tasks = set()
                         for _ in range(workers_needed):
                             task = asyncio.create_task(worker())
                             new_tasks.add(task)
                             task.add_done_callback(tasks.discard)
-                        # Update task set in one operation
                         tasks.update(new_tasks)
+
             except Exception as e:
-                logger.error(f"limit_async: Error in health check: {str(e)}")
+                logger.error(f"{queue_name}: Error in enhanced health check: {str(e)}")
             finally:
-                logger.debug("limit_async: Health check task exiting")
+                logger.debug(f"{queue_name}: Enhanced health check task exiting")
                 initialized = False
 
         async def ensure_workers():
-            """Ensure worker threads and health check system are available
-
-            This function checks if the worker system is already initialized.
-            If not, it performs a one-time initialization of all worker threads
-            and starts the health check system.
-            """
+            """Ensure worker system is initialized with enhanced error handling"""
             nonlocal initialized, worker_health_check_task, tasks, reinit_count
 
             if initialized:
@@ -469,45 +667,56 @@ def priority_limit_async_func_call(max_size: int, max_queue_size: int = 1000):
                 if initialized:
                     return
 
-                # Increment reinitialization counter if this is not the first initialization
                 if reinit_count > 0:
                     reinit_count += 1
                     logger.warning(
-                        f"limit_async: Reinitializing needed (count: {reinit_count})"
+                        f"{queue_name}: Reinitializing system (count: {reinit_count})"
                     )
                 else:
-                    reinit_count = 1  # First initialization
+                    reinit_count = 1
 
-                # Check for completed tasks and remove them from the task set
+                # Clean up completed tasks
                 current_tasks = set(tasks)
                 done_tasks = {t for t in current_tasks if t.done()}
                 tasks.difference_update(done_tasks)
 
-                # Log active tasks count during reinitialization
                 active_tasks_count = len(tasks)
                 if active_tasks_count > 0 and reinit_count > 1:
                     logger.warning(
-                        f"limit_async: {active_tasks_count} tasks still running during reinitialization"
+                        f"{queue_name}: {active_tasks_count} tasks still running during reinitialization"
                     )
 
-                # Create initial worker tasks, only adding the number needed
+                # Create worker tasks
                 workers_needed = max_size - active_tasks_count
                 for _ in range(workers_needed):
                     task = asyncio.create_task(worker())
                     tasks.add(task)
                     task.add_done_callback(tasks.discard)
 
-                # Start health check
-                worker_health_check_task = asyncio.create_task(health_check())
+                # Start enhanced health check
+                worker_health_check_task = asyncio.create_task(enhanced_health_check())
 
                 initialized = True
-                logger.info(f"limit_async: {workers_needed} new workers initialized")
+                # Log dynamic timeout configuration
+                timeout_info = []
+                if llm_timeout is not None:
+                    timeout_info.append(f"Func: {llm_timeout}s")
+                if max_execution_timeout is not None:
+                    timeout_info.append(f"Worker: {max_execution_timeout}s")
+                if max_task_duration is not None:
+                    timeout_info.append(f"Health Check: {max_task_duration}s")
+
+                timeout_str = (
+                    f" (Timeouts: {', '.join(timeout_info)})" if timeout_info else ""
+                )
+                logger.info(
+                    f"{queue_name}: {workers_needed} new workers initialized {timeout_str}"
+                )
 
         async def shutdown():
-            """Gracefully shut down all workers and the queue"""
-            logger.info("limit_async: Shutting down priority queue workers")
+            """Gracefully shut down all workers and cleanup resources"""
+            logger.info(f"{queue_name}: Shutting down priority queue workers")
 
-            # Set the shutdown event
             shutdown_event.set()
 
             # Cancel all active futures
@@ -515,15 +724,22 @@ def priority_limit_async_func_call(max_size: int, max_queue_size: int = 1000):
                 if not future.done():
                     future.cancel()
 
-            # Wait for the queue to empty
+            # Cancel all pending tasks
+            async with task_states_lock:
+                for task_id, task_state in list(task_states.items()):
+                    if not task_state.future.done():
+                        task_state.future.cancel()
+                task_states.clear()
+
+            # Wait for queue to empty with timeout
             try:
                 await asyncio.wait_for(queue.join(), timeout=5.0)
             except asyncio.TimeoutError:
                 logger.warning(
-                    "limit_async: Timeout waiting for queue to empty during shutdown"
+                    f"{queue_name}: Timeout waiting for queue to empty during shutdown"
                 )
 
-            # Cancel all worker tasks
+            # Cancel worker tasks
             for task in list(tasks):
                 if not task.done():
                     task.cancel()
@@ -532,7 +748,7 @@ def priority_limit_async_func_call(max_size: int, max_queue_size: int = 1000):
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Cancel the health check task
+            # Cancel health check task
             if worker_health_check_task and not worker_health_check_task.done():
                 worker_health_check_task.cancel()
                 try:
@@ -540,84 +756,120 @@ def priority_limit_async_func_call(max_size: int, max_queue_size: int = 1000):
                 except asyncio.CancelledError:
                     pass
 
-            logger.info("limit_async: Priority queue workers shutdown complete")
+            logger.info(f"{queue_name}: Priority queue workers shutdown complete")
 
         @wraps(func)
         async def wait_func(
             *args, _priority=10, _timeout=None, _queue_timeout=None, **kwargs
         ):
             """
-            Execute the function with priority-based concurrency control
+            Execute function with enhanced priority-based concurrency control and timeout handling
+
             Args:
                 *args: Positional arguments passed to the function
                 _priority: Call priority (lower values have higher priority)
-                _timeout: Maximum time to wait for function completion (in seconds)
+                _timeout: Maximum time to wait for completion (in seconds, none means determinded by max_execution_timeout of the queue)
                 _queue_timeout: Maximum time to wait for entering the queue (in seconds)
                 **kwargs: Keyword arguments passed to the function
+
             Returns:
                 The result of the function call
+
             Raises:
-                TimeoutError: If the function call times out
+                TimeoutError: If the function call times out at any level
                 QueueFullError: If the queue is full and waiting times out
                 Any exception raised by the decorated function
             """
-            # Ensure worker system is initialized
             await ensure_workers()
 
-            # Create a future for the result
+            # Generate unique task ID
+            task_id = f"{id(asyncio.current_task())}_{asyncio.get_event_loop().time()}"
             future = asyncio.Future()
-            active_futures.add(future)
 
-            nonlocal counter
-            async with initialization_lock:
-                current_count = counter  # Use local variable to avoid race conditions
-                counter += 1
+            # Create task state
+            task_state = TaskState(
+                future=future, start_time=asyncio.get_event_loop().time()
+            )
 
-            # Try to put the task into the queue, supporting timeout
             try:
-                if _queue_timeout is not None:
-                    # Use timeout to wait for queue space
-                    try:
+                # Register task state
+                async with task_states_lock:
+                    task_states[task_id] = task_state
+
+                active_futures.add(future)
+
+                # Get counter for FIFO ordering
+                nonlocal counter
+                async with initialization_lock:
+                    current_count = counter
+                    counter += 1
+
+                # Queue the task with timeout handling
+                try:
+                    if _queue_timeout is not None:
                         await asyncio.wait_for(
-                            # current_count is used to ensure FIFO order
-                            queue.put((_priority, current_count, future, args, kwargs)),
+                            queue.put(
+                                (_priority, current_count, task_id, args, kwargs)
+                            ),
                             timeout=_queue_timeout,
                         )
-                    except asyncio.TimeoutError:
-                        raise QueueFullError(
-                            f"Queue full, timeout after {_queue_timeout} seconds"
+                    else:
+                        await queue.put(
+                            (_priority, current_count, task_id, args, kwargs)
                         )
-                else:
-                    # No timeout, may wait indefinitely
-                    # current_count is used to ensure FIFO order
-                    await queue.put((_priority, current_count, future, args, kwargs))
-            except Exception as e:
-                # Clean up the future
-                if not future.done():
-                    future.set_exception(e)
-                active_futures.discard(future)
-                raise
+                except asyncio.TimeoutError:
+                    raise QueueFullError(
+                        f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
+                    )
+                except Exception as e:
+                    # Clean up on queue error
+                    if not future.done():
+                        future.set_exception(e)
+                    raise
 
-            try:
-                # Wait for the result, optional timeout
-                if _timeout is not None:
-                    try:
+                # Wait for result with timeout handling
+                try:
+                    if _timeout is not None:
                         return await asyncio.wait_for(future, _timeout)
-                    except asyncio.TimeoutError:
-                        # Cancel the future
-                        if not future.done():
-                            future.cancel()
-                        raise TimeoutError(
-                            f"limit_async: Task timed out after {_timeout} seconds"
-                        )
-                else:
-                    # Wait for the result without timeout
-                    return await future
-            finally:
-                # Clean up the future reference
-                active_futures.discard(future)
+                    else:
+                        return await future
+                except asyncio.TimeoutError:
+                    # This is user-level timeout (asyncio.wait_for caused)
+                    # Mark cancellation request
+                    async with task_states_lock:
+                        if task_id in task_states:
+                            task_states[task_id].cancellation_requested = True
 
-        # Add the shutdown method to the decorated function
+                    # Cancel future
+                    if not future.done():
+                        future.cancel()
+
+                    # Wait for worker cleanup with timeout
+                    cleanup_start = asyncio.get_event_loop().time()
+                    while (
+                        task_id in task_states
+                        and asyncio.get_event_loop().time() - cleanup_start
+                        < cleanup_timeout
+                    ):
+                        await asyncio.sleep(0.1)
+
+                    raise TimeoutError(
+                        f"{queue_name}: User timeout after {_timeout} seconds"
+                    )
+                except WorkerTimeoutError as e:
+                    # This is Worker-level timeout, directly propagate exception information
+                    raise TimeoutError(f"{queue_name}: {str(e)}")
+                except HealthCheckTimeoutError as e:
+                    # This is Health Check-level timeout, directly propagate exception information
+                    raise TimeoutError(f"{queue_name}: {str(e)}")
+
+            finally:
+                # Ensure cleanup
+                active_futures.discard(future)
+                async with task_states_lock:
+                    task_states.pop(task_id, None)
+
+        # Add shutdown method to decorated function
         wait_func.shutdown = shutdown
 
         return wait_func
@@ -638,7 +890,7 @@ def wrap_embedding_func_with_attrs(**kwargs):
 def load_json(file_name):
     if not os.path.exists(file_name):
         return None
-    with open(file_name, encoding="utf-8") as f:
+    with open(file_name, encoding="utf-8-sig") as f:
         return json.load(f)
 
 
@@ -748,19 +1000,6 @@ def split_string_by_multi_markers(content: str, markers: list[str]) -> list[str]
     return [r.strip() for r in results if r.strip()]
 
 
-# Refer the utils functions of the official GraphRAG implementation:
-# https://github.com/microsoft/graphrag
-def clean_str(input: Any) -> str:
-    """Clean an input string by removing HTML escapes, control characters, and other unwanted characters."""
-    # If we get non-string input, just give it back
-    if not isinstance(input, str):
-        return input
-
-    result = html.unescape(input.strip())
-    # https://stackoverflow.com/questions/4324790/removing-control-characters-from-a-string-in-python
-    return re.sub(r"[\x00-\x1f\x7f-\x9f]", "", result)
-
-
 def is_float_regex(value: str) -> bool:
     return bool(re.match(r"^[-+]?[0-9]*\.?[0-9]+$", value))
 
@@ -790,67 +1029,33 @@ def cosine_similarity(v1, v2):
     return dot_product / (norm1 * norm2)
 
 
-def quantize_embedding(embedding: np.ndarray | list[float], bits: int = 8) -> tuple:
-    """Quantize embedding to specified bits"""
-    # Convert list to numpy array if needed
-    if isinstance(embedding, list):
-        embedding = np.array(embedding)
-
-    # Calculate min/max values for reconstruction
-    min_val = embedding.min()
-    max_val = embedding.max()
-
-    if min_val == max_val:
-        # handle constant vector
-        quantized = np.zeros_like(embedding, dtype=np.uint8)
-        return quantized, min_val, max_val
-
-    # Quantize to 0-255 range
-    scale = (2**bits - 1) / (max_val - min_val)
-    quantized = np.round((embedding - min_val) * scale).astype(np.uint8)
-
-    return quantized, min_val, max_val
-
-
-def dequantize_embedding(
-    quantized: np.ndarray, min_val: float, max_val: float, bits=8
-) -> np.ndarray:
-    """Restore quantized embedding"""
-    if min_val == max_val:
-        # handle constant vector
-        return np.full_like(quantized, min_val, dtype=np.float32)
-
-    scale = (max_val - min_val) / (2**bits - 1)
-    return (quantized * scale + min_val).astype(np.float32)
-
-
 async def handle_cache(
     hashing_kv,
     args_hash,
     prompt,
     mode="default",
-    cache_type=None,
-):
+    cache_type="unknown",
+) -> str | None:
     """Generic cache handling function with flattened cache keys"""
     if hashing_kv is None:
-        return None, None, None, None
+        return None
 
     if mode != "default":  # handle cache for all type of query
         if not hashing_kv.global_config.get("enable_llm_cache"):
-            return None, None, None, None
+            return None
     else:  # handle cache for entity extraction
         if not hashing_kv.global_config.get("enable_llm_cache_for_entity_extract"):
-            return None, None, None, None
+            return None
 
     # Use flattened cache key format: {mode}:{cache_type}:{hash}
     flattened_key = generate_cache_key(mode, cache_type, args_hash)
     cache_entry = await hashing_kv.get_by_id(flattened_key)
     if cache_entry:
         logger.debug(f"Flattened cache hit(key:{flattened_key})")
-        return cache_entry["return"], None, None, None
+        return cache_entry["return"]
 
     logger.debug(f"Cache missed(mode:{mode} type:{cache_type})")
-    return None, None, None, None
+    return None
 
 
 @dataclass
@@ -858,12 +1063,10 @@ class CacheData:
     args_hash: str
     content: str
     prompt: str
-    quantized: np.ndarray | None = None
-    min_val: float | None = None
-    max_val: float | None = None
     mode: str = "default"
     cache_type: str = "query"
     chunk_id: str | None = None
+    queryparam: dict | None = None
 
 
 async def save_to_cache(hashing_kv, cache_data: CacheData):
@@ -900,15 +1103,10 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
         "return": cache_data.content,
         "cache_type": cache_data.cache_type,
         "chunk_id": cache_data.chunk_id if cache_data.chunk_id is not None else None,
-        "embedding": cache_data.quantized.tobytes().hex()
-        if cache_data.quantized is not None
-        else None,
-        "embedding_shape": cache_data.quantized.shape
-        if cache_data.quantized is not None
-        else None,
-        "embedding_min": cache_data.min_val,
-        "embedding_max": cache_data.max_val,
         "original_prompt": cache_data.prompt,
+        "queryparam": cache_data.queryparam
+        if cache_data.queryparam is not None
+        else None,
     }
 
     logger.info(f" == LLM cache == saving: {flattened_key}")
@@ -1440,24 +1638,30 @@ async def update_chunk_cache_list(
 
 
 def remove_think_tags(text: str) -> str:
-    """Remove <think> tags from the text"""
-    return re.sub(r"^(<think>.*?</think>|<think>)", "", text, flags=re.DOTALL).strip()
+    """Remove <think>...</think> tags from the text
+    Remove  orphon ...</think> tags from the text also"""
+    return re.sub(
+        r"^(<think>.*?</think>|.*</think>)", "", text, flags=re.DOTALL
+    ).strip()
 
 
 async def use_llm_func_with_cache(
-    input_text: str,
+    user_prompt: str,
     use_llm_func: callable,
     llm_response_cache: "BaseKVStorage | None" = None,
+    system_prompt: str | None = None,
     max_tokens: int = None,
     history_messages: list[dict[str, str]] = None,
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
 ) -> str:
-    """Call LLM function with cache support
+    """Call LLM function with cache support and text sanitization
 
     If cache is available and enabled (determined by handle_cache based on mode),
     retrieve result from cache; otherwise call LLM function and save result to cache.
+
+    This function applies text sanitization to prevent UTF-8 encoding errors for all LLM providers.
 
     Args:
         input_text: Input text to send to LLM
@@ -1473,18 +1677,40 @@ async def use_llm_func_with_cache(
     Returns:
         LLM response text
     """
+    # Sanitize input text to prevent UTF-8 encoding errors for all LLM providers
+    safe_user_prompt = sanitize_text_for_encoding(user_prompt)
+    safe_system_prompt = (
+        sanitize_text_for_encoding(system_prompt) if system_prompt else None
+    )
+
+    # Sanitize history messages if provided
+    safe_history_messages = None
+    if history_messages:
+        safe_history_messages = []
+        for i, msg in enumerate(history_messages):
+            safe_msg = msg.copy()
+            if "content" in safe_msg:
+                safe_msg["content"] = sanitize_text_for_encoding(safe_msg["content"])
+            safe_history_messages.append(safe_msg)
+        history = json.dumps(safe_history_messages, ensure_ascii=False)
+    else:
+        history = None
+
     if llm_response_cache:
-        if history_messages:
-            history = json.dumps(history_messages, ensure_ascii=False)
-            _prompt = history + "\n" + input_text
-        else:
-            _prompt = input_text
+        prompt_parts = []
+        if safe_user_prompt:
+            prompt_parts.append(safe_user_prompt)
+        if safe_system_prompt:
+            prompt_parts.append(safe_system_prompt)
+        if history:
+            prompt_parts.append(history)
+        _prompt = "\n".join(prompt_parts)
 
         arg_hash = compute_args_hash(_prompt)
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 
-        cached_return, _1, _2, _3 = await handle_cache(
+        cached_return = await handle_cache(
             llm_response_cache,
             arg_hash,
             _prompt,
@@ -1502,14 +1728,17 @@ async def use_llm_func_with_cache(
             return cached_return
         statistic_data["llm_call"] += 1
 
-        # Call LLM
+        # Call LLM with sanitized input
         kwargs = {}
-        if history_messages:
-            kwargs["history_messages"] = history_messages
+        if safe_history_messages:
+            kwargs["history_messages"] = safe_history_messages
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
-        res: str = await use_llm_func(input_text, **kwargs)
+        res: str = await use_llm_func(
+            safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
+        )
+
         res = remove_think_tags(res)
 
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
@@ -1530,15 +1759,23 @@ async def use_llm_func_with_cache(
 
         return res
 
-    # When cache is disabled, directly call LLM
+    # When cache is disabled, directly call LLM with sanitized input
     kwargs = {}
-    if history_messages:
-        kwargs["history_messages"] = history_messages
+    if safe_history_messages:
+        kwargs["history_messages"] = safe_history_messages
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
-    logger.info(f"Call LLM function with query text length: {len(input_text)}")
-    res = await use_llm_func(input_text, **kwargs)
+    try:
+        res = await use_llm_func(
+            safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
+        )
+    except Exception as e:
+        # Add [LLM func] prefix to error message
+        error_msg = f"[LLM func] {str(e)}"
+        # Re-raise with the same exception type but modified message
+        raise type(e)(error_msg) from e
+
     return remove_think_tags(res)
 
 
@@ -1558,28 +1795,81 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     return content[:max_length] + "..."
 
 
-def normalize_extracted_info(name: str, is_entity=False) -> str:
+def sanitize_and_normalize_extracted_text(
+    input_text: str, remove_inner_quotes=False
+) -> str:
+    """Santitize and normalize extracted text
+    Args:
+        input_text: text string to be processed
+        is_name: whether the input text is a entity or relation name
+
+    Returns:
+        Santitized and normalized text string
+    """
+    safe_input_text = sanitize_text_for_encoding(input_text)
+    if safe_input_text:
+        normalized_text = normalize_extracted_info(
+            safe_input_text, remove_inner_quotes=remove_inner_quotes
+        )
+        return normalized_text
+    return ""
+
+
+def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     """Normalize entity/relation names and description with the following rules:
-    1. Remove spaces between Chinese characters
-    2. Remove spaces between Chinese characters and English letters/numbers
-    3. Preserve spaces within English text and numbers
-    4. Replace Chinese parentheses with English parentheses
-    5. Replace Chinese dash with English dash
-    6. Remove English quotation marks from the beginning and end of the text
-    7. Remove English quotation marks in and around chinese
-    8. Remove Chinese quotation marks
+    - Clean HTML tags (paragraph and line break tags)
+    - Convert Chinese symbols to English symbols
+    - Remove spaces between Chinese characters
+    - Remove spaces between Chinese characters and English letters/numbers
+    - Preserve spaces within English text and numbers
+    - Replace Chinese parentheses with English parentheses
+    - Replace Chinese dash with English dash
+    - Remove English quotation marks from the beginning and end of the text
+    - Remove English quotation marks in and around chinese
+    - Remove Chinese quotation marks
+    - Filter out short numeric-only text (length < 3 and only digits/dots)
+    - remove_inner_quotes = True
+        remove Chinese quotes
+        remove English queotes in and around chinese
+        Convert non-breaking spaces to regular spaces
+        Convert narrow non-breaking spaces after non-digits to regular spaces
 
     Args:
         name: Entity name to normalize
+        is_entity: Whether this is an entity name (affects quote handling)
 
     Returns:
         Normalized entity name
     """
+    # Clean HTML tags - remove paragraph and line break tags
+    name = re.sub(r"</p\s*>|<p\s*>|<p/>", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"</br\s*>|<br\s*>|<br/>", "", name, flags=re.IGNORECASE)
+
+    # Chinese full-width letters to half-width (A-Z, a-z)
+    name = name.translate(
+        str.maketrans(
+            "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ",
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+        )
+    )
+
+    # Chinese full-width numbers to half-width
+    name = name.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+
+    # Chinese full-width symbols to half-width
+    name = name.replace("－", "-")  # Chinese minus
+    name = name.replace("＋", "+")  # Chinese plus
+    name = name.replace("／", "/")  # Chinese slash
+    name = name.replace("＊", "*")  # Chinese asterisk
+
     # Replace Chinese parentheses with English parentheses
     name = name.replace("（", "(").replace("）", ")")
 
-    # Replace Chinese dash with English dash
+    # Replace Chinese dash with English dash (additional patterns)
     name = name.replace("—", "-").replace("－", "-")
+
+    # Chinese full-width space to regular space (after other replacements)
+    name = name.replace("　", " ")
 
     # Use regex to remove spaces between Chinese characters
     # Regex explanation:
@@ -1596,32 +1886,156 @@ def normalize_extracted_info(name: str, is_entity=False) -> str:
         r"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])\s+(?=[\u4e00-\u9fa5])", "", name
     )
 
-    # Remove English quotation marks from the beginning and end
-    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
-        name = name[1:-1]
-    if len(name) >= 2 and name.startswith("'") and name.endswith("'"):
-        name = name[1:-1]
+    # Remove outer quotes
+    if len(name) >= 2:
+        # Handle double quotes
+        if name.startswith('"') and name.endswith('"'):
+            inner_content = name[1:-1]
+            if '"' not in inner_content:  # No double quotes inside
+                name = inner_content
 
-    if is_entity:
-        # remove Chinese quotes
+        # Handle single quotes
+        if name.startswith("'") and name.endswith("'"):
+            inner_content = name[1:-1]
+            if "'" not in inner_content:  # No single quotes inside
+                name = inner_content
+
+        # Handle Chinese-style double quotes
+        if name.startswith("“") and name.endswith("”"):
+            inner_content = name[1:-1]
+            if "“" not in inner_content and "”" not in inner_content:
+                name = inner_content
+        if name.startswith("‘") and name.endswith("’"):
+            inner_content = name[1:-1]
+            if "‘" not in inner_content and "’" not in inner_content:
+                name = inner_content
+
+        # Handle Chinese-style book title mark
+        if name.startswith("《") and name.endswith("》"):
+            inner_content = name[1:-1]
+            if "《" not in inner_content and "》" not in inner_content:
+                name = inner_content
+
+    if remove_inner_quotes:
+        # Remove Chinese quotes
         name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
-        # remove English queotes in and around chinese
+        # Remove English queotes in and around chinese
         name = re.sub(r"['\"]+(?=[\u4e00-\u9fa5])", "", name)
         name = re.sub(r"(?<=[\u4e00-\u9fa5])['\"]+", "", name)
+        # Convert non-breaking space to regular space
+        name = name.replace("\u00a0", " ")
+        # Convert narrow non-breaking space to regular space when after non-digits
+        name = re.sub(r"(?<=[^\d])\u202F", " ", name)
+
+    # Remove spaces from the beginning and end of the text
+    name = name.strip()
+
+    # Filter out pure numeric content with length < 3
+    if len(name) < 3 and re.match(r"^[0-9]+$", name):
+        return ""
+
+    def should_filter_by_dots(text):
+        """
+        Check if the string consists only of dots and digits, with at least one dot
+        Filter cases include: 1.2.3, 12.3, .123, 123., 12.3., .1.23 etc.
+        """
+        return all(c.isdigit() or c == "." for c in text) and "." in text
+
+    if len(name) < 6 and should_filter_by_dots(name):
+        # Filter out mixed numeric and dot content with length < 6
+        return ""
+        # Filter out mixed numeric and dot content with length < 6, requiring at least one dot
+        return ""
 
     return name
 
 
-def clean_text(text: str) -> str:
-    """Clean text by removing null bytes (0x00) and whitespace
+def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
+    """Sanitize text to ensure safe UTF-8 encoding by removing or replacing problematic characters.
+
+    This function handles:
+    - Surrogate characters (the main cause of encoding errors)
+    - Other invalid Unicode sequences
+    - Control characters that might cause issues
+    - Unescape HTML escapes
+    - Remove control characters
+    - Whitespace trimming
 
     Args:
-        text: Input text to clean
+        text: Input text to sanitize
+        replacement_char: Character to use for replacing invalid sequences
 
     Returns:
-        Cleaned text
+        Sanitized text that can be safely encoded as UTF-8
+
+    Raises:
+        ValueError: When text contains uncleanable encoding issues that cannot be safely processed
     """
-    return text.strip().replace("\x00", "")
+    if not text:
+        return text
+
+    try:
+        # First, strip whitespace
+        text = text.strip()
+
+        # Early return if text is empty after basic cleaning
+        if not text:
+            return text
+
+        # Try to encode/decode to catch any encoding issues early
+        text.encode("utf-8")
+
+        # Remove or replace surrogate characters (U+D800 to U+DFFF)
+        # These are the main cause of the encoding error
+        sanitized = ""
+        for char in text:
+            code_point = ord(char)
+            # Check for surrogate characters
+            if 0xD800 <= code_point <= 0xDFFF:
+                # Replace surrogate with replacement character
+                sanitized += replacement_char
+                continue
+            # Check for other problematic characters
+            elif code_point == 0xFFFE or code_point == 0xFFFF:
+                # These are non-characters in Unicode
+                sanitized += replacement_char
+                continue
+            else:
+                sanitized += char
+
+        # Additional cleanup: remove null bytes and other control characters that might cause issues
+        # (but preserve common whitespace like \t, \n, \r)
+        sanitized = re.sub(
+            r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", replacement_char, sanitized
+        )
+
+        # Test final encoding to ensure it's safe
+        sanitized.encode("utf-8")
+
+        # Unescape HTML escapes
+        sanitized = html.unescape(sanitized)
+
+        # Remove control characters but preserve common whitespace (\t, \n, \r)
+        sanitized = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]", "", sanitized)
+
+        return sanitized.strip()
+
+    except UnicodeEncodeError as e:
+        # Critical change: Don't return placeholder, raise exception for caller to handle
+        error_msg = f"Text contains uncleanable UTF-8 encoding issues: {str(e)[:100]}"
+        logger.error(f"Text sanitization failed: {error_msg}")
+        raise ValueError(error_msg) from e
+
+    except Exception as e:
+        logger.error(f"Text sanitization: Unexpected error: {str(e)}")
+        # For other exceptions, if no encoding issues detected, return original text
+        try:
+            text.encode("utf-8")
+            return text
+        except UnicodeEncodeError:
+            raise ValueError(
+                f"Text sanitization failed with unexpected error: {str(e)}"
+            ) from e
 
 
 def check_storage_env_vars(storage_name: str) -> None:
@@ -1645,7 +2059,7 @@ def check_storage_env_vars(storage_name: str) -> None:
         )
 
 
-def linear_gradient_weighted_polling(
+def pick_by_weighted_polling(
     entities_or_relations: list[dict],
     max_related_chunks: int,
     min_related_chunks: int = 1,
@@ -1723,6 +2137,129 @@ def linear_gradient_weighted_polling(
             break
 
     return selected_chunks
+
+
+async def pick_by_vector_similarity(
+    query: str,
+    text_chunks_storage: "BaseKVStorage",
+    chunks_vdb: "BaseVectorStorage",
+    num_of_chunks: int,
+    entity_info: list[dict[str, Any]],
+    embedding_func: callable,
+    query_embedding=None,
+) -> list[str]:
+    """
+    Vector similarity-based text chunk selection algorithm.
+
+    This algorithm selects text chunks based on cosine similarity between
+    the query embedding and text chunk embeddings.
+
+    Args:
+        query: User's original query string
+        text_chunks_storage: Text chunks storage instance
+        chunks_vdb: Vector database storage for chunks
+        num_of_chunks: Number of chunks to select
+        entity_info: List of entity information containing chunk IDs
+        embedding_func: Embedding function to compute query embedding
+
+    Returns:
+        List of selected text chunk IDs sorted by similarity (highest first)
+    """
+    logger.debug(
+        f"Vector similarity chunk selection: num_of_chunks={num_of_chunks}, entity_info_count={len(entity_info) if entity_info else 0}"
+    )
+
+    if not entity_info or num_of_chunks <= 0:
+        return []
+
+    # Collect all unique chunk IDs from entity info
+    all_chunk_ids = set()
+    for i, entity in enumerate(entity_info):
+        chunk_ids = entity.get("sorted_chunks", [])
+        all_chunk_ids.update(chunk_ids)
+
+    if not all_chunk_ids:
+        logger.warning(
+            "Vector similarity chunk selection:  no chunk IDs found in entity_info"
+        )
+        return []
+
+    logger.debug(
+        f"Vector similarity chunk selection: {len(all_chunk_ids)} unique chunk IDs collected"
+    )
+
+    all_chunk_ids = list(all_chunk_ids)
+
+    try:
+        # Use pre-computed query embedding if provided, otherwise compute it
+        if query_embedding is None:
+            query_embedding = await embedding_func([query])
+            query_embedding = query_embedding[
+                0
+            ]  # Extract first embedding from batch result
+            logger.debug(
+                "Computed query embedding for vector similarity chunk selection"
+            )
+        else:
+            logger.debug(
+                "Using pre-computed query embedding for vector similarity chunk selection"
+            )
+
+        # Get chunk embeddings from vector database
+        chunk_vectors = await chunks_vdb.get_vectors_by_ids(all_chunk_ids)
+        logger.debug(
+            f"Vector similarity chunk selection: {len(chunk_vectors)} chunk vectors Retrieved"
+        )
+
+        if not chunk_vectors or len(chunk_vectors) != len(all_chunk_ids):
+            if not chunk_vectors:
+                logger.warning(
+                    "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
+                )
+            else:
+                logger.warning(
+                    f"Vector similarity chunk selection: found {len(chunk_vectors)} but expecting {len(all_chunk_ids)}"
+                )
+            return []
+
+        # Calculate cosine similarities
+        similarities = []
+        valid_vectors = 0
+        for chunk_id in all_chunk_ids:
+            if chunk_id in chunk_vectors:
+                chunk_embedding = chunk_vectors[chunk_id]
+                try:
+                    # Calculate cosine similarity
+                    similarity = cosine_similarity(query_embedding, chunk_embedding)
+                    similarities.append((chunk_id, similarity))
+                    valid_vectors += 1
+                except Exception as e:
+                    logger.warning(
+                        f"Vector similarity chunk selection: failed to calculate similarity for chunk {chunk_id}: {e}"
+                    )
+            else:
+                logger.warning(
+                    f"Vector similarity chunk selection:  no vector found for chunk {chunk_id}"
+                )
+
+        # Sort by similarity (highest first) and select top num_of_chunks
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        selected_chunks = [chunk_id for chunk_id, _ in similarities[:num_of_chunks]]
+
+        logger.debug(
+            f"Vector similarity chunk selection: {len(selected_chunks)} chunks from {len(all_chunk_ids)} candidates"
+        )
+
+        return selected_chunks
+
+    except Exception as e:
+        logger.error(f"[VECTOR_SIMILARITY] Error in vector similarity sorting: {e}")
+        import traceback
+
+        logger.error(f"[VECTOR_SIMILARITY] Traceback: {traceback.format_exc()}")
+        # Fallback to simple truncation
+        logger.debug("[VECTOR_SIMILARITY] Falling back to simple truncation")
+        return all_chunk_ids[:num_of_chunks]
 
 
 class TokenTracker:
@@ -1813,17 +2350,50 @@ async def apply_rerank_if_enabled(
         return retrieved_docs
 
     try:
-        # Apply reranking - let rerank_model_func handle top_k internally
-        reranked_docs = await rerank_func(
+        # Extract document content for reranking
+        document_texts = []
+        for doc in retrieved_docs:
+            # Try multiple possible content fields
+            content = (
+                doc.get("content")
+                or doc.get("text")
+                or doc.get("chunk_content")
+                or doc.get("document")
+                or str(doc)
+            )
+            document_texts.append(content)
+
+        # Call the new rerank function that returns index-based results
+        rerank_results = await rerank_func(
             query=query,
-            documents=retrieved_docs,
+            documents=document_texts,
             top_n=top_n,
         )
-        if reranked_docs and len(reranked_docs) > 0:
-            if len(reranked_docs) > top_n:
-                reranked_docs = reranked_docs[:top_n]
-            logger.info(f"Successfully reranked: {len(retrieved_docs)} chunks")
-            return reranked_docs
+
+        # Process rerank results based on return format
+        if rerank_results and len(rerank_results) > 0:
+            # Check if results are in the new index-based format
+            if isinstance(rerank_results[0], dict) and "index" in rerank_results[0]:
+                # New format: [{"index": 0, "relevance_score": 0.85}, ...]
+                reranked_docs = []
+                for result in rerank_results:
+                    index = result["index"]
+                    relevance_score = result["relevance_score"]
+
+                    # Get original document and add rerank score
+                    if 0 <= index < len(retrieved_docs):
+                        doc = retrieved_docs[index].copy()
+                        doc["rerank_score"] = relevance_score
+                        reranked_docs.append(doc)
+
+                logger.info(
+                    f"Successfully reranked: {len(reranked_docs)} chunks from {len(retrieved_docs)} original chunks"
+                )
+                return reranked_docs
+            else:
+                # Legacy format: assume it's already reranked documents
+                logger.info(f"Using legacy rerank format: {len(rerank_results)} chunks")
+                return rerank_results[:top_n] if top_n else rerank_results
         else:
             logger.warning("Rerank returned empty results, using original chunks")
             return retrieved_docs
@@ -1917,12 +2487,14 @@ async def process_chunks_unified(
             )
 
         original_count = len(unique_chunks)
+
         unique_chunks = truncate_list_by_token_size(
             unique_chunks,
-            key=lambda x: x.get("content", ""),
+            key=lambda x: json.dumps(x, ensure_ascii=False),
             max_token_size=chunk_token_limit,
             tokenizer=tokenizer,
         )
+
         logger.debug(
             f"Token truncation: {len(unique_chunks)} chunks from {original_count} "
             f"(chunk available tokens: {chunk_token_limit}, source: {source_type})"
@@ -1932,7 +2504,7 @@ async def process_chunks_unified(
 
 
 def build_file_path(already_file_paths, data_list, target):
-    """Build file path string with length limit and deduplication
+    """Build file path string with UTF-8 byte length limit and deduplication
 
     Args:
         already_file_paths: List of existing file paths
@@ -1947,6 +2519,14 @@ def build_file_path(already_file_paths, data_list, target):
 
     # string: filter empty value and keep file order in already_file_paths
     file_paths = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
+
+    # Check if initial file_paths already exceeds byte length limit
+    if len(file_paths.encode("utf-8")) >= DEFAULT_MAX_FILE_PATH_LENGTH:
+        logger.warning(
+            f"Initial file_paths already exceeds {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
+            f"current size: {len(file_paths.encode('utf-8'))} bytes"
+        )
+
     # ignored file_paths
     file_paths_ignore = ""
     # add file_paths
@@ -1962,21 +2542,105 @@ def build_file_path(already_file_paths, data_list, target):
         # add
         file_paths_set.add(cur_file_path)
 
-        # check the length
+        # check the UTF-8 byte length
+        new_addition = GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
         if (
-            len(file_paths) + len(GRAPH_FIELD_SEP + cur_file_path)
-            < DEFAULT_MAX_FILE_PATH_LENGTH
+            len(file_paths.encode("utf-8")) + len(new_addition.encode("utf-8"))
+            < DEFAULT_MAX_FILE_PATH_LENGTH - 5
         ):
             # append
-            file_paths += (
-                GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
-            )
+            file_paths += new_addition
         else:
             # ignore
             file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
 
     if file_paths_ignore:
         logger.warning(
-            f"Length of file_path exceeds {target}, ignoring new file: {file_paths_ignore}"
+            f"File paths exceed {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
+            f"ignoring file path: {file_paths_ignore}"
         )
     return file_paths
+
+
+def generate_track_id(prefix: str = "upload") -> str:
+    """Generate a unique tracking ID with timestamp and UUID
+
+    Args:
+        prefix: Prefix for the track ID (e.g., 'upload', 'insert')
+
+    Returns:
+        str: Unique tracking ID in format: {prefix}_{timestamp}_{uuid}
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_id = str(uuid.uuid4())[:8]  # Use first 8 characters of UUID
+    return f"{prefix}_{timestamp}_{unique_id}"
+
+
+def get_pinyin_sort_key(text: str) -> str:
+    """Generate sort key for Chinese pinyin sorting
+
+    This function uses pypinyin for true Chinese pinyin sorting.
+    If pypinyin is not available, it falls back to simple lowercase string sorting.
+
+    Args:
+        text: Text to generate sort key for
+
+    Returns:
+        str: Sort key that can be used for comparison and sorting
+    """
+    if not text:
+        return ""
+
+    if _PYPINYIN_AVAILABLE:
+        try:
+            # Convert Chinese characters to pinyin, keep non-Chinese as-is
+            pinyin_list = pypinyin.lazy_pinyin(text, style=pypinyin.Style.NORMAL)
+            return "".join(pinyin_list).lower()
+        except Exception:
+            # Silently fall back to simple string sorting on any error
+            return text.lower()
+    else:
+        # pypinyin not available, use simple string sorting
+        return text.lower()
+
+
+def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exception:
+    """
+    Safely create a prefixed exception that adapts to all error types.
+
+    Args:
+        original_exception: The original exception.
+        prefix: The prefix to add.
+
+    Returns:
+        A new exception with the prefix, maintaining the original exception type if possible.
+    """
+    try:
+        # Method 1: Try to reconstruct using original arguments.
+        if hasattr(original_exception, "args") and original_exception.args:
+            args = list(original_exception.args)
+            # Find the first string argument and prefix it. This is safer for
+            # exceptions like OSError where the first arg is an integer (errno).
+            found_str = False
+            for i, arg in enumerate(args):
+                if isinstance(arg, str):
+                    args[i] = f"{prefix}: {arg}"
+                    found_str = True
+                    break
+
+            # If no string argument is found, prefix the first argument's string representation.
+            if not found_str:
+                args[0] = f"{prefix}: {args[0]}"
+
+            return type(original_exception)(*args)
+        else:
+            # Method 2: If no args, try single parameter construction.
+            return type(original_exception)(f"{prefix}: {str(original_exception)}")
+    except (TypeError, ValueError, AttributeError) as construct_error:
+        # Method 3: If reconstruction fails, wrap it in a RuntimeError.
+        # This is the safest fallback, as attempting to create the same type
+        # with a single string can fail if the constructor requires multiple arguments.
+        return RuntimeError(
+            f"{prefix}: {type(original_exception).__name__}: {str(original_exception)} "
+            f"(Original exception could not be reconstructed: {construct_error})"
+        )

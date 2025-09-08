@@ -50,6 +50,8 @@
       "confirmPlaceholder": "輸入 yes 以確認",
       "clearCache": "清空 LLM 快取",
       "confirmButton": "確定",
+      "clearing": "正在清除...",
+      "timeout": "清除操作逾時，請重試",
       "success": "文件清空成功",
       "cacheCleared": "快取清空成功",
       "cacheClearFailed": "清空快取失敗：\n{{error}}",
@@ -72,15 +74,11 @@
       "failed": "刪除文件失敗：\n{{message}}",
       "error": "刪除文件失敗：\n{{error}}",
       "busy": "pipeline 被佔用，請稍後再試",
-      "notAllowed": "沒有操作權限",
-      "cannotDeleteAll": "無法刪除所有文件。如確實需要刪除所有文件請使用清空文件功能。"
+      "notAllowed": "沒有操作權限"
     },
-    "deselectDocuments": {
-      "button": "取消選取",
-      "tooltip": "取消選取所有文件",
-      "title": "取消選取文件",
-      "description": "此操作將清除所有選取的文件（已選取 {{count}} 個）",
-      "confirmButton": "取消全部選取"
+    "selectDocuments": {
+      "selectCurrentPage": "全選當前頁 ({{count}})",
+      "deselectAll": "取消全選 ({{count}})"
     },
     "uploadDocuments": {
       "button": "上傳",
@@ -99,7 +97,7 @@
         "error": "部分檔案上傳失敗"
       },
       "generalError": "上傳失敗\n{{error}}",
-      "fileTypes": "支援的檔案類型：TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "支援的檔案類型：TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "一次只能上傳一個檔案",
         "maxFilesLimit": "最多只能上傳 {{count}} 個檔案",
@@ -117,6 +115,7 @@
       "title": "文件管理",
       "scanButton": "掃描",
       "scanTooltip": "掃描輸入目錄中的文件",
+      "refreshTooltip": "重設文件清單",
       "pipelineStatusButton": "pipeline 狀態",
       "pipelineStatusTooltip": "查看pipeline 狀態",
       "uploadedTitle": "已上傳文件",
@@ -125,6 +124,7 @@
       "emptyDescription": "尚未上傳任何文件",
       "columns": {
         "id": "ID",
+        "fileName": "檔案名稱",
         "summary": "摘要",
         "status": "狀態",
         "length": "長度",
@@ -187,7 +187,10 @@
       "unknown": "未知",
       "object": "物品",
       "group": "群組",
-      "technology": "技術"
+      "technology": "技術",
+      "product": "產品",
+      "document": "文檔",
+      "other": "其他"
     },
     "sideBar": {
       "settings": {
@@ -334,7 +337,10 @@
   "retrievePanel": {
     "chatMessage": {
       "copyTooltip": "複製到剪貼簿",
-      "copyError": "複製文字到剪貼簿失敗"
+      "copyError": "複製文字到剪貼簿失敗",
+      "thinking": "正在思考...",
+      "thinkingTime": "思考用時 {{time}} 秒",
+      "thinkingInProgress": "思考進行中..."
     },
     "retrieval": {
       "startPrompt": "輸入查詢開始檢索",
@@ -401,5 +407,14 @@
     "description": "請輸入您的 API key 以存取服務",
     "placeholder": "請輸入 API key",
     "save": "儲存"
+  },
+  "pagination": {
+    "showing": "顯示第 {{start}} 到 {{end}} 筆，共 {{total}} 筆記錄",
+    "page": "頁",
+    "pageSize": "每頁顯示",
+    "firstPage": "第一頁",
+    "prevPage": "上一頁",
+    "nextPage": "下一頁",
+    "lastPage": "最後一頁"
   }
 }
