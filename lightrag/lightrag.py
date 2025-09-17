@@ -904,6 +904,7 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        chunks: dict[str, Any] | None = None,
     ) -> str:
         """Async Insert documents with checkpoint support
 
@@ -926,7 +927,7 @@ class LightRAG:
 
         await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
         await self.apipeline_process_enqueue_documents(
-            split_by_character, split_by_character_only
+            split_by_character, split_by_character_only, chunks
         )
 
         return track_id
@@ -1352,6 +1353,7 @@ class LightRAG:
         self,
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
+        chunks: dict[str, Any] | None = None,
     ) -> None:
         """
         Process pending documents by splitting them into chunks, processing
@@ -1473,6 +1475,7 @@ class LightRAG:
                     pipeline_status: dict,
                     pipeline_status_lock: asyncio.Lock,
                     semaphore: asyncio.Semaphore,
+                    chunks: dict[str, Any] | None = None,
                 ) -> None:
                     """Process single document"""
                     file_extraction_stage_ok = False
@@ -1522,22 +1525,23 @@ class LightRAG:
                             content = content_data["content"]
 
                             # Generate chunks from document
-                            chunks: dict[str, Any] = {
-                                compute_mdhash_id(dp["content"], prefix="chunk-"): {
-                                    **dp,
-                                    "full_doc_id": doc_id,
-                                    "file_path": file_path,  # Add file path to each chunk
-                                    "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
+                            if not chunks: 
+                                chunks: dict[str, Any] = {
+                                    compute_mdhash_id(dp["content"], prefix="chunk-"): {
+                                        **dp,
+                                        "full_doc_id": doc_id,
+                                        "file_path": file_path,  # Add file path to each chunk
+                                        "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
+                                    }
+                                    for dp in self.chunking_func(
+                                        self.tokenizer,
+                                        content,
+                                        split_by_character,
+                                        split_by_character_only,
+                                        self.chunk_overlap_token_size,
+                                        self.chunk_token_size,
+                                    )
                                 }
-                                for dp in self.chunking_func(
-                                    self.tokenizer,
-                                    content,
-                                    split_by_character,
-                                    split_by_character_only,
-                                    self.chunk_overlap_token_size,
-                                    self.chunk_token_size,
-                                )
-                            }
 
                             if not chunks:
                                 logger.warning("No document chunks to process")
@@ -1758,6 +1762,7 @@ class LightRAG:
                             pipeline_status,
                             pipeline_status_lock,
                             semaphore,
+                            chunks
                         )
                     )
 
