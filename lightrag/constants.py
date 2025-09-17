@@ -24,15 +24,16 @@ DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
 DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
 # Default entities to extract if ENTITY_TYPES is not specified in .env
 DEFAULT_ENTITY_TYPES = [
-    "Organization",
     "Person",
+    "Organization",
     "Location",
     "Event",
-    "Technology",
-    "Equipment",
-    "Product",
-    "Document",
-    "Category",
+    "Concept",
+    "Method",
+    "Content",
+    "Data",
+    "Artifact",
+    "NaturalObject",
 ]
 
 # Separator for graph fields
@@ -69,7 +70,7 @@ DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding function
 DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations
 
 # Gunicorn worker timeout
-DEFAULT_TIMEOUT = 210
+DEFAULT_TIMEOUT = 300
 
 # Default llm and embedding timeout
 DEFAULT_LLM_TIMEOUT = 180
