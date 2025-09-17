@@ -158,8 +158,6 @@ class QueryParam:
     Default is True to enable reranking when rerank model is available.
     """
 
-    json_context: bool = False
-
 
 @dataclass
 class StorageNameSpace(ABC):
