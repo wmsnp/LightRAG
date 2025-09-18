@@ -2306,14 +2306,17 @@ async def apply_rerank_if_enabled(
         # Extract document content for reranking
         document_texts = []
         for doc in retrieved_docs:
+            if isinstance(doc, dict):
             # Try multiple possible content fields
-            content = (
-                doc.get("content")
-                or doc.get("text")
-                or doc.get("chunk_content")
-                or doc.get("document")
-                or str(doc)
-            )
+                content = (
+                    doc.get("content")
+                    or doc.get("text")
+                    or doc.get("chunk_content")
+                    or doc.get("document")
+                    or str(doc)
+                )
+            else:
+                content = str(doc)
             document_texts.append(content)
 
         # Call the new rerank function that returns index-based results
