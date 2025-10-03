@@ -2276,7 +2276,7 @@ async def kg_query(
         - stream=True: response_iterator contains streaming response, raw_data contains complete data
         - default: content contains LLM response text, raw_data contains complete data
     """
-    if not query:
+    if not query and query_param.mode in ["mix", "naive"]:
         return QueryResult(content=PROMPTS["fail_response"])
 
     if query_param.model_func:
@@ -3284,7 +3284,7 @@ async def _build_query_context(
     Returns unified QueryContextResult containing both context and raw_data.
     """
 
-    if not query:
+    if not query and query_param.mode in ["mix", "naive"]:
         logger.warning("Query is empty, skipping context building")
         return None
 
