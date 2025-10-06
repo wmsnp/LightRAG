@@ -71,8 +71,18 @@ class QueryRequest(BaseModel):
         default=None,
         description="Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt).",
         ge=1,
-    )
+    ),
 
+    hl_keywords: Optional[list[str]] = Field(
+        default=None,
+        description="List of high-level keywords to prioritize in retrieval."
+    ),
+
+    ll_keywords: Optional[list[str]] = Field(
+        default=None,
+        description="List of low-level keywords to refine retrieval focus."
+    ),
+    
     conversation_history: Optional[List[Dict[str, Any]]] = Field(
         default=None,
         description="Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}].",
