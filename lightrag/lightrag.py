@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import traceback
 import asyncio
 import configparser
@@ -906,7 +907,6 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
-        chunks: dict[str, Any] | None = None,
     ) -> str:
         """Async Insert documents with checkpoint support
 
@@ -929,7 +929,7 @@ class LightRAG:
 
         await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
         await self.apipeline_process_enqueue_documents(
-            split_by_character, split_by_character_only, chunks
+            split_by_character, split_by_character_only
         )
 
         return track_id
@@ -1355,7 +1355,6 @@ class LightRAG:
         self,
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
-        chunks: dict[str, Any] | None = None,
     ) -> None:
         """
         Process pending documents by splitting them into chunks, processing
@@ -1527,6 +1526,21 @@ class LightRAG:
                             content = content_data["content"]
 
                             # Generate chunks from document
+                            if file_path.endswith(".json"):
+                                try:
+                                    chunk_list = json.loads(content)
+                                    if isinstance(chunk_list, list) and all(isinstance(item, str) for item in chunk_list):
+                                        chunks: dict[str, Any]  = {
+                                            compute_mdhash_id(chunk, prefix="chunk-"): {
+                                                "content": chunk,
+                                                "full_doc_id": doc_id,
+                                                "file_path": file_path,
+                                                "llm_cache_list": [],
+                                            }
+                                            for chunk in chunk_list
+                                        }
+                                except: pass  # noqa: E722
+
                             if not chunks: 
                                 chunks: dict[str, Any] = {
                                     compute_mdhash_id(dp["content"], prefix="chunk-"): {
@@ -1763,8 +1777,7 @@ class LightRAG:
                             split_by_character_only,
                             pipeline_status,
                             pipeline_status_lock,
-                            semaphore,
-                            chunks
+                            semaphore
                         )
                     )
 
