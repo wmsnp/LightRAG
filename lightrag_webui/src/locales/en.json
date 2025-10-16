@@ -114,10 +114,12 @@
     "documentManager": {
       "title": "Document Management",
       "scanButton": "Scan",
-      "scanTooltip": "Scan documents in input folder",
+      "scanTooltip": "Scan and process documents in input folder, and also reprocess all failed documents",
+      "retryFailedButton": "Retry",
+      "retryFailedTooltip": "Retry processing all failed documents",
       "refreshTooltip": "Reset document list",
-      "pipelineStatusButton": "Pipeline Status",
-      "pipelineStatusTooltip": "View pipeline status",
+      "pipelineStatusButton": "Pipeline",
+      "pipelineStatusTooltip": "View document processing pipeline status",
       "uploadedTitle": "Uploaded Documents",
       "uploadedDescription": "List of uploaded documents and their statuses.",
       "emptyTitle": "No Documents",
@@ -137,6 +139,7 @@
       "status": {
         "all": "All",
         "completed": "Completed",
+        "preprocessed": "Preprocessed",
         "processing": "Processing",
         "pending": "Pending",
         "failed": "Failed"
@@ -333,14 +336,14 @@
     },
     "search": {
       "placeholder": "Search nodes in page...",
-      "message": "And {count} others"
+      "message": "And {{count}} others"
     },
     "graphLabels": {
       "selectTooltip": "Get subgraph of a node (label)",
       "noLabels": "No matching nodes found",
       "label": "Search node name",
       "placeholder": "Search node name...",
-      "andOthers": "And {count} others",
+      "andOthers": "And {{count}} others",
       "refreshGlobalTooltip": "Refresh global graph data and reset search history",
       "refreshCurrentLabelTooltip": "Refresh current page graph data",
       "refreshingTooltip": "Refreshing data..."

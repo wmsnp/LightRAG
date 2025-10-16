@@ -114,10 +114,12 @@
     "documentManager": {
       "title": "文件管理",
       "scanButton": "掃描",
-      "scanTooltip": "掃描輸入目錄中的文件",
+      "scanTooltip": "掃描處理輸入目錄中的文件，同時重新處理所有失敗的文件",
+      "retryFailedButton": "重試",
+      "retryFailedTooltip": "重新處理所有失敗的文件",
       "refreshTooltip": "重設文件清單",
-      "pipelineStatusButton": "pipeline 狀態",
-      "pipelineStatusTooltip": "查看pipeline 狀態",
+      "pipelineStatusButton": "管線狀態",
+      "pipelineStatusTooltip": "查看文件處理管線狀態",
       "uploadedTitle": "已上傳文件",
       "uploadedDescription": "已上傳文件清單及其狀態",
       "emptyTitle": "無文件",
@@ -137,6 +139,7 @@
       "status": {
         "all": "全部",
         "completed": "已完成",
+        "preprocessed": "預處理",
         "processing": "處理中",
         "pending": "等待中",
         "failed": "失敗"
@@ -333,14 +336,14 @@
     },
     "search": {
       "placeholder": "頁面內搜尋節點...",
-      "message": "還有 {count} 個"
+      "message": "還有 {{count}} 個"
     },
     "graphLabels": {
       "selectTooltip": "獲取節點(標籤)子圖",
       "noLabels": "未找到匹配的節點",
       "label": "搜尋節點名稱",
       "placeholder": "搜尋節點名稱...",
-      "andOthers": "還有 {count} 個",
+      "andOthers": "還有 {{count}} 個",
       "refreshGlobalTooltip": "重新整理全圖資料和重置搜尋歷史",
       "refreshCurrentLabelTooltip": "重新整理目前頁面圖形資料",
       "refreshingTooltip": "正在重新整理資料..."

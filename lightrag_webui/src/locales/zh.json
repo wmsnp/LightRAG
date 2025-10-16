@@ -114,10 +114,12 @@
     "documentManager": {
       "title": "文档管理",
       "scanButton": "扫描",
-      "scanTooltip": "扫描输入目录中的文档",
+      "scanTooltip": "扫描处理输入目录中的文档，同时重新处理所有失败的文档",
+      "retryFailedButton": "重试",
+      "retryFailedTooltip": "重新处理所有失败的文档",
       "refreshTooltip": "复位文档清单",
-      "pipelineStatusButton": "流水线状态",
-      "pipelineStatusTooltip": "查看流水线状态",
+      "pipelineStatusButton": "流水线",
+      "pipelineStatusTooltip": "查看文档处理流水线状态",
       "uploadedTitle": "已上传文档",
       "uploadedDescription": "已上传文档列表及其状态",
       "emptyTitle": "无文档",
@@ -137,6 +139,7 @@
       "status": {
         "all": "全部",
         "completed": "已完成",
+        "preprocessed": "预处理",
         "processing": "处理中",
         "pending": "等待中",
         "failed": "失败"
@@ -333,14 +336,14 @@
     },
     "search": {
       "placeholder": "页面内搜索节点...",
-      "message": "还有 {count} 个"
+      "message": "还有 {{count}} 个"
     },
     "graphLabels": {
       "selectTooltip": "获取节点(标签)子图",
       "noLabels": "未找到匹配的节点",
       "label": "搜索节点名称",
       "placeholder": "搜索节点名称...",
-      "andOthers": "还有 {count} 个",
+      "andOthers": "还有 {{count}} 个",
       "refreshGlobalTooltip": "刷新全图数据和重置搜索历史",
       "refreshCurrentLabelTooltip": "刷新当前页面图数据",
       "refreshingTooltip": "正在刷新数据..."
