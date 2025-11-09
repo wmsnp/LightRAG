@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import traceback
 import asyncio
 import configparser
@@ -1480,7 +1479,6 @@ class LightRAG:
                     pipeline_status: dict,
                     pipeline_status_lock: asyncio.Lock,
                     semaphore: asyncio.Semaphore,
-                    chunks: dict[str, Any] | None = None,
                 ) -> None:
                     """Process single document"""
                     file_extraction_stage_ok = False
@@ -1529,39 +1527,22 @@ class LightRAG:
                                 )
                             content = content_data["content"]
 
-                            # Generate chunks from document
-                            if file_path.endswith(".json"):
-                                try:
-                                    chunk_list = json.loads(content)
-                                    if isinstance(chunk_list, list) and all(isinstance(item, str) for item in chunk_list):
-                                        chunks: dict[str, Any]  = {
-                                            compute_mdhash_id(chunk, prefix="chunk-"): {
-                                                "content": chunk,
-                                                "full_doc_id": doc_id,
-                                                "file_path": file_path,
-                                                "llm_cache_list": [],
-                                            }
-                                            for chunk in chunk_list
-                                        }
-                                except: pass  # noqa: E722
-
-                            if not chunks: 
-                                chunks: dict[str, Any] = {
-                                    compute_mdhash_id(dp["content"], prefix="chunk-"): {
-                                        **dp,
-                                        "full_doc_id": doc_id,
-                                        "file_path": file_path,  # Add file path to each chunk
-                                        "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
-                                    }
-                                    for dp in self.chunking_func(
-                                        self.tokenizer,
-                                        content,
-                                        split_by_character,
-                                        split_by_character_only,
-                                        self.chunk_overlap_token_size,
-                                        self.chunk_token_size,
-                                    )
+                            chunks: dict[str, Any] = {
+                                compute_mdhash_id(dp["content"], prefix="chunk-"): {
+                                    **dp,
+                                    "full_doc_id": doc_id,
+                                    "file_path": file_path,  # Add file path to each chunk
+                                    "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
                                 }
+                                for dp in self.chunking_func(
+                                    self.tokenizer,
+                                    content,
+                                    split_by_character,
+                                    split_by_character_only,
+                                    self.chunk_overlap_token_size,
+                                    self.chunk_token_size,
+                                )
+                            }
 
                             if not chunks:
                                 logger.warning("No document chunks to process")

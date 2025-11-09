@@ -71,8 +71,20 @@ def chunking_by_token_size(
     overlap_token_size: int = 128,
     max_token_size: int = 1024,
 ) -> list[dict[str, Any]]:
-    tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
+    try:
+        chunk_list = json.loads(content)
+        if isinstance(chunk_list, list) and all(isinstance(item, str) for item in chunk_list):
+            return [
+                {
+                    "content": chunk,
+                    "tokens": len(tokenizer.encode(chunk)),
+                    "chunk_order_index": index,
+                }
+                for index, chunk in enumerate(chunk_list)
+            ]
+    except: pass  # noqa: E722
+    tokens = tokenizer.encode(content)
     if split_by_character:
         raw_chunks = content.split(split_by_character)
         new_chunks = []
