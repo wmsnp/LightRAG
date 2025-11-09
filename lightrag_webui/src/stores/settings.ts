@@ -78,6 +78,10 @@ interface SettingsState {
 
   currentTab: Tab
   setCurrentTab: (tab: Tab) => void
+
+  // Search label dropdown refresh trigger (non-persistent, runtime only)
+  searchLabelDropdownRefreshTrigger: number
+  triggerSearchLabelDropdownRefresh: () => void
 }
 
 const useSettingsStoreBase = create<SettingsState>()(
@@ -137,12 +141,6 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setLanguage: (language: Language) => {
         set({ language })
-        // Update i18n after state is updated
-        import('i18next').then(({ default: i18n }) => {
-          if (i18n.language !== language) {
-            i18n.changeLanguage(language)
-          }
-        })
       },
 
       setGraphLayoutMaxIterations: (iterations: number) =>
@@ -229,7 +227,14 @@ const useSettingsStoreBase = create<SettingsState>()(
         })
       },
 
-      setUserPromptHistory: (history: string[]) => set({ userPromptHistory: history })
+      setUserPromptHistory: (history: string[]) => set({ userPromptHistory: history }),
+
+      // Search label dropdown refresh trigger (not persisted)
+      searchLabelDropdownRefreshTrigger: 0,
+      triggerSearchLabelDropdownRefresh: () =>
+        set((state) => ({
+          searchLabelDropdownRefreshTrigger: state.searchLabelDropdownRefreshTrigger + 1
+        }))
     }),
     {
       name: 'settings-storage',

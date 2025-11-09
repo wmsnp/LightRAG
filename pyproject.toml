@@ -23,13 +23,14 @@ classifiers = [
 dependencies = [
     "aiohttp",
     "configparser",
-    "dotenv",
     "future",
+    "google-api-core>=2.0.0,<3.0.0",
+    "google-genai>=1.0.0,<2.0.0",
     "json_repair",
     "nano-vectordb",
     "networkx",
     "numpy",
-    "pandas>=2.0.0,<2.3.0",
+    "pandas>=2.0.0,<2.4.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
@@ -45,14 +46,13 @@ api = [
     # Core dependencies
     "aiohttp",
     "configparser",
-    "dotenv",
     "future",
     "json_repair",
     "nano-vectordb",
     "networkx",
     "numpy",
-    "openai>=1.0.0,<2.0.0",
-    "pandas>=2.0.0,<2.3.0",
+    "openai>=1.0.0,<3.0.0",
+    "pandas>=2.0.0,<2.4.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
@@ -61,6 +61,8 @@ api = [
     "tenacity",
     "tiktoken",
     "xlsxwriter>=3.1.0",
+    "google-api-core>=2.0.0,<3.0.0",
+    "google-genai>=1.0.0,<2.0.0",
     # API-specific dependencies
     "aiofiles",
     "ascii_colors",
@@ -82,15 +84,16 @@ api = [
 # Offline deployment dependencies (layered design for flexibility)
 offline-docs = [
     # Document processing dependencies
+    "openpyxl>=3.0.0,<4.0.0",
+    "pycryptodome>=3.0.0,<4.0.0",
     "pypdf2>=3.0.0",
     "python-docx>=0.8.11,<2.0.0",
     "python-pptx>=0.6.21,<2.0.0",
-    "openpyxl>=3.0.0,<4.0.0",
 ]
 
 offline-storage = [
     # Storage backend dependencies
-    "redis>=5.0.0,<7.0.0",
+    "redis>=5.0.0,<8.0.0",
     "neo4j>=5.0.0,<7.0.0",
     "pymilvus>=2.6.2,<3.0.0",
     "pymongo>=4.0.0,<5.0.0",
@@ -100,18 +103,34 @@ offline-storage = [
 
 offline-llm = [
     # LLM provider dependencies
-    "openai>=1.0.0,<2.0.0",
+    "openai>=1.0.0,<3.0.0",
     "anthropic>=0.18.0,<1.0.0",
     "ollama>=0.1.0,<1.0.0",
     "zhipuai>=2.0.0,<3.0.0",
     "aioboto3>=12.0.0,<16.0.0",
     "voyageai>=0.2.0,<1.0.0",
     "llama-index>=0.9.0,<1.0.0",
+    "google-api-core>=2.0.0,<3.0.0",
+    "google-genai>=1.0.0,<2.0.0",
 ]
 
 offline = [
     # Complete offline package (includes all offline dependencies)
     "lightrag-hku[offline-docs,offline-storage,offline-llm]",
+]
+
+evaluation = [
+    # RAG evaluation dependencies (RAGAS framework)
+    "ragas>=0.3.7",
+    "datasets>=4.3.0",
+    "httpx>=0.28.1",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+]
+
+observability = [
+    # LLM observability and tracing dependencies
+    "langfuse>=3.8.1",
 ]
 
 [project.scripts]
@@ -136,7 +155,7 @@ include-package-data = true
 version = {attr = "lightrag.__version__"}
 
 [tool.setuptools.package-data]
-lightrag = ["api/webui/**/*"]
+lightrag = ["api/webui/**/*", "api/static/**/*"]
 
 [tool.ruff]
 target-version = "py310"
