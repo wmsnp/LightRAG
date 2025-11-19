@@ -92,6 +92,19 @@ def _truncate_entity_identifier(
     )
     return display_value
 
+def get_chunks(tokenizer: Tokenizer, content: str):
+    try:
+        chunk_list = json.loads(content)
+        if isinstance(chunk_list, list) and all(isinstance(item, str) for item in chunk_list):
+            return [
+                {
+                    "content": chunk,
+                    "tokens": len(tokenizer.encode(chunk)),
+                    "chunk_order_index": index,
+                }
+                for index, chunk in enumerate(chunk_list)
+            ]
+    except: return []  # noqa: E701, E722
 
 def chunking_by_token_size(
     tokenizer: Tokenizer,
@@ -101,6 +114,7 @@ def chunking_by_token_size(
     overlap_token_size: int = 128,
     max_token_size: int = 1024,
 ) -> list[dict[str, Any]]:
+    if chunks := get_chunks(tokenizer, content): return chunks  # noqa: E701
     tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
     if split_by_character:
