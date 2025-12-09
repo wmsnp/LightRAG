@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lightrag-hku"
-dynamic = ["version"]
+version = "1.4.9.9"
 authors = [
     {name = "Zirui Guo"}
 ]
@@ -167,9 +167,6 @@ exclude = ["data*", "tests*", "scripts*", "examples*", "dickens*", "reproduce*",
 
 [tool.setuptools]
 include-package-data = true
-
-[tool.setuptools.dynamic]
-version = {attr = "lightrag.__version__"}
 
 [tool.setuptools.package-data]
 lightrag = ["api/webui/**/*", "api/static/**/*"]
